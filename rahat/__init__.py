@@ -1,0 +1,6 @@
+APP_NAME = "Rahat Hesabat"
+APP_VERSION = "1.0.0"
+COMPANY = "Rahat Yaşam"
+DEDICATED_TO = "İlahə Əşrəfqızı"
+PRESENTED_BY = "FMC"
+PRESENTED_URL = "fmc.az"
