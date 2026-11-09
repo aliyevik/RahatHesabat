@@ -11,6 +11,10 @@ Xüsusi olaraq **İlahə Əşrəfqızı** üçün hazırlanmışdır. Təqdim ed
 2. **Debitor / kreditor borclar.** Apsiyonun «Detaylı Borç Listesi» faylından hesabat qurur:
    hər kontragent və ay üzrə hesablanma, ödəmə və qalıq. «DEVREDEN BORÇLAR» sətirləri ilk saldoya düşür.
 
+«Hesabatı hazırla» basılanda hesabat bütün ekranı tutan ayrıca səhifədə açılır («← Geri qayıt» — formaya).
+İstənilən rəqəmə basanda kartoçka açılır: o rəqəmin hansı Apsiyon sənədlərindən yarandığı göstərilir
+(«← Hesabata qayıt» və ya Esc). Ekranda iki görünüş var: yan-yana (forma) və alt-alta (12 ay ekrana sığır).
+
 Hesabatı PDF və Excel-ə albom formatında çıxarmaq olur. Yarımçıq aylar hesabata daxil edilmir.
 
 ## EXE faylı

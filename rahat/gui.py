@@ -6,8 +6,8 @@ import os
 import traceback
 
 from PySide6.QtCore import QDate, Qt, QUrl, QTimer
-from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QIcon, QLinearGradient,
-                           QPainter, QPalette)
+from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QFontMetrics, QIcon,
+                           QKeySequence, QLinearGradient, QPainter, QPalette, QShortcut)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDateEdit,
                                QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDate
 from . import APP_NAME, APP_VERSION, COMPANY, DEDICATED_TO, PRESENTED_BY, PRESENTED_URL, theme
 from .export_excel import save_grid_xlsx
 from .export_pdf import resource_path, save_grid_pdf
-from .layout import NOTE, Grid, debt_grid, pl_grid
+from .layout import NOTE, Grid, debt_grid, debt_grid_stacked, pl_grid, pl_grid_stacked
 from .model import (all_items, build_debt, build_pl, data_range, fmt_date, fmt_money,
                     full_months, month_label)
 from .parsers import ParseError, detect, load_debt_list, load_gelir_gider
@@ -218,65 +218,181 @@ class WelcomeWindow(QWidget):
         self.close()
 
 
-# ===================================================================== Önizləmə cədvəli
-def fill_preview(table: QTableWidget, grid: Grid):
-    table.clear()
-    rows = grid.head_rows + grid.rows
-    table.setRowCount(len(rows))
-    table.setColumnCount(grid.ncols)
-    table.clearSpans()
-    bold = QFont()
-    bold.setBold(True)
-    for ri, cells in enumerate(rows):
-        if cells and cells[0] is not None and cells[0].style == NOTE:
-            table.setRowHeight(ri, 10)
-            continue
-        for ci, cell in enumerate(cells):
-            if cell is None:
+# ===================================================================== Hesabat cədvəli
+def cell_text(v) -> str:
+    if isinstance(v, (int, float)):
+        return "–" if abs(v) < 0.005 else fmt_money(v)
+    return "" if v is None else str(v)
+
+
+class ReportTable(QTableWidget):
+    """Hesabat cədvəli: miqyas (zoom), ekrana sığdırma və rəqəmə basanda kartoçka."""
+
+    def __init__(self, on_ref):
+        super().__init__()
+        self.on_ref = on_ref
+        self.grid: Grid | None = None
+        self.refs: list = []
+        self.pt = 9.0
+        self.horizontalHeader().setVisible(False)
+        self.verticalHeader().setVisible(False)
+        self.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setWordWrap(True)
+        self.setMouseTracking(True)
+        self.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.cellClicked.connect(self._clicked)
+        self.cellEntered.connect(self._entered)
+
+    def _ref_at(self, r, c):
+        it = self.item(r, c)
+        if it is None:
+            return None
+        i = it.data(Qt.UserRole)
+        return self.refs[i] if isinstance(i, int) and 0 <= i < len(self.refs) else None
+
+    def _clicked(self, r, c):
+        ref = self._ref_at(r, c)
+        if ref is not None:
+            self.on_ref(ref)
+
+    def _entered(self, r, c):
+        self.viewport().setCursor(Qt.PointingHandCursor if self._ref_at(r, c) is not None
+                                  else Qt.ArrowCursor)
+
+    def set_grid(self, grid: Grid):
+        self.grid = grid
+        self.refs = []
+        self.clear()
+        self.clearSpans()
+        rows = grid.head_rows + grid.rows
+        self.setRowCount(len(rows))
+        self.setColumnCount(grid.ncols)
+        for ri, cells in enumerate(rows):
+            if cells and cells[0] is not None and cells[0].style == NOTE:
                 continue
-            v = cell.value
-            if isinstance(v, (int, float)):
-                txt = "–" if abs(v) < 0.005 else fmt_money(v)
+            for ci, cell in enumerate(cells):
+                if cell is None:
+                    continue
+                v = cell.value
+                it = QTableWidgetItem(cell_text(v))
+                al = {"left": Qt.AlignLeft, "center": Qt.AlignHCenter, "right": Qt.AlignRight}[cell.align]
+                it.setTextAlignment(al | Qt.AlignVCenter)
+                bg = theme.STYLE_BG.get(cell.style)
+                if bg:
+                    it.setBackground(QBrush(QColor(bg)))
+                elif ri % 2 == 0 and not grid.stacked:
+                    it.setBackground(QBrush(QColor(theme.BLUE_PALE)))
+                fg = theme.STYLE_FG.get(cell.style)
+                if fg:
+                    it.setForeground(QBrush(QColor(fg)))
+                elif isinstance(v, (int, float)) and v < -0.004:
+                    it.setForeground(QBrush(QColor("#B3261E")))
+                if cell.ref is not None and isinstance(v, (int, float)) and abs(v) >= 0.005:
+                    it.setData(Qt.UserRole, len(self.refs))
+                    self.refs.append(cell.ref)
+                    it.setToolTip("Bu rəqəmin necə yarandığını görmək üçün basın")
+                self.setItem(ri, ci, it)
+                if cell.colspan > 1 or cell.rowspan > 1:
+                    self.setSpan(ri, ci, cell.rowspan, cell.colspan)
+        self.apply_zoom(self.pt)
+
+    def _widths(self, pt):
+        f = QFont(self.font())
+        f.setPointSizeF(pt)
+        fb = QFont(f)
+        fb.setBold(True)
+        fm, fmb = QFontMetrics(f), QFontMetrics(fb)
+        g = self.grid
+        w = [0] * g.ncols
+        for cells in g.head_rows + g.rows:
+            for ci, cell in enumerate(cells):
+                if cell is None or cell.colspan > 1 or cell.style in (NOTE, "sub"):
+                    continue
+                txt = cell_text(cell.value)
+                m = fmb if cell.style in theme.STYLE_BOLD else fm
+                if cell.style == "head":
+                    ww = max((m.horizontalAdvance(s) for s in txt.split("\n")), default=0)
+                    if ci > 0:
+                        ww = min(ww, fmb.horizontalAdvance("000 000,00"))
+                else:
+                    ww = m.horizontalAdvance(txt)
+                w[ci] = max(w[ci], ww + 8)
+        sub_min = fmb.horizontalAdvance("Ödəmə") + 8
+        w = [max(x, sub_min) for x in w]
+        name_cap = fm.horizontalAdvance("M" * 20)
+        for ci in range(g.ncols):
+            if g.col_widths[ci] >= 2.5:
+                w[ci] = min(w[ci], name_cap)
+        return w
+
+    def apply_zoom(self, pt):
+        if not self.grid:
+            return
+        self.pt = max(5.5, min(16.0, pt))
+        rows = self.grid.head_rows + self.grid.rows
+        for ri, cells in enumerate(rows):
+            for ci, cell in enumerate(cells):
+                it = self.item(ri, ci)
+                if it is None or cell is None:
+                    continue
+                f = QFont(self.font())
+                f.setPointSizeF(self.pt)
+                f.setBold(cell.style in theme.STYLE_BOLD)
+                it.setFont(f)
+        widths = self._widths(self.pt)
+        for ci, w in enumerate(widths):
+            self.setColumnWidth(ci, w)
+        # Dar sütunlarda «Hesablanma» başlığını qısaldırıq
+        fb = QFont(self.font())
+        fb.setPointSizeF(self.pt)
+        fb.setBold(True)
+        full_w = QFontMetrics(fb).horizontalAdvance("Hesablanma") + 8
+        for ri, cells in enumerate(rows):
+            for ci, cell in enumerate(cells):
+                if cell is not None and cell.style == "sub" and self.item(ri, ci):
+                    self.item(ri, ci).setText(cell.value if widths[ci] >= full_w
+                                              else {"Hesablanma": "Hesabl."}.get(cell.value, cell.value))
+        f = QFont(self.font())
+        f.setPointSizeF(self.pt)
+        h = QFontMetrics(f).height()
+        for ri, cells in enumerate(rows):
+            st = cells[0].style if cells and cells[0] is not None else None
+            if st == NOTE:
+                self.setRowHeight(ri, max(6, h // 2))
+            elif st == "head":
+                self.setRowHeight(ri, h * 3 + 6)
             else:
-                txt = "" if v is None else str(v)
-            it = QTableWidgetItem(txt)
-            al = {"left": Qt.AlignLeft, "center": Qt.AlignHCenter, "right": Qt.AlignRight}[cell.align]
-            it.setTextAlignment(al | Qt.AlignVCenter)
-            bg = theme.STYLE_BG.get(cell.style)
-            if bg:
-                it.setBackground(QBrush(QColor(bg)))
-            fg = theme.STYLE_FG.get(cell.style)
-            if fg:
-                it.setForeground(QBrush(QColor(fg)))
-            elif isinstance(v, (int, float)) and v < -0.004:
-                it.setForeground(QBrush(QColor("#B3261E")))
-            if cell.style in theme.STYLE_BOLD:
-                it.setFont(bold)
-            table.setItem(ri, ci, it)
-            if cell.colspan > 1 or cell.rowspan > 1:
-                table.setSpan(ri, ci, cell.rowspan, cell.colspan)
-    table.resizeColumnsToContents()
-    for c in range(table.columnCount()):
-        table.setColumnWidth(c, min(max(table.columnWidth(c), 70), 280))
-    for ri, cells in enumerate(rows):
-        if cells and cells[0] is not None and cells[0].style == "head":
-            table.setRowHeight(ri, 40)
+                self.setRowHeight(ri, h + 5)
+
+    def fit_to_width(self):
+        if not self.grid:
+            return
+        avail = self.viewport().width() - 4
+        pt = 11.0
+        while pt > 6.5 and sum(self._widths(pt)) > avail:
+            pt -= 0.25
+        self.apply_zoom(pt)
+
+    def wheelEvent(self, e):
+        if e.modifiers() & Qt.ControlModifier:
+            self.apply_zoom(self.pt + (0.5 if e.angleDelta().y() > 0 else -0.5))
+            e.accept()
+            return
+        super().wheelEvent(e)
 
 
-def make_preview_table() -> QTableWidget:
-    t = QTableWidget()
-    t.horizontalHeader().setVisible(False)
-    t.verticalHeader().setVisible(False)
-    t.setEditTriggers(QAbstractItemView.NoEditTriggers)
-    t.setSelectionMode(QAbstractItemView.ContiguousSelection)
-    t.setWordWrap(True)
-    t.verticalHeader().setDefaultSectionSize(24)
-    return t
+def back_button(text: str) -> QPushButton:
+    b = QPushButton("←  " + text)
+    b.setCursor(Qt.PointingHandCursor)
+    b.setStyleSheet(f"QPushButton{{font-weight:600; color:{theme.NAVY}; padding:7px 16px;}}")
+    return b
 
 
 # ===================================================================== Ümumi səhifə
 class ReportPage(QWidget):
-    """Sol tərəfdə idarəetmə, sağda önizləmə olan səhifə."""
+    """Üç görünüş: 1) forma, 2) tam ekran hesabat, 3) rəqəmin kartoçkası."""
 
     def __init__(self, main: "MainWindow", title: str, subtitle: str):
         super().__init__()
@@ -285,7 +401,14 @@ class ReportPage(QWidget):
         self.grid: Grid | None = None
         self.setObjectName("page")
         self.setAcceptDrops(True)
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.views = QStackedWidget()
+        outer.addWidget(self.views)
+
+        # ---------- 1. Forma
+        form = QWidget()
+        root = QVBoxLayout(form)
         root.setContentsMargins(22, 18, 22, 18)
         root.setSpacing(12)
         t = QLabel(title)
@@ -295,28 +418,50 @@ class ReportPage(QWidget):
         s.setWordWrap(True)
         root.addWidget(t)
         root.addWidget(s)
-
-        body = QHBoxLayout()
-        body.setSpacing(16)
-        root.addLayout(body, 1)
-
         self.left = QWidget()
+        self.left.setMaximumWidth(760)
         self.left_lay = QVBoxLayout(self.left)
         self.left_lay.setContentsMargins(0, 0, 6, 0)
         self.left_lay.setSpacing(12)
+        holder = QWidget()
+        hl = QHBoxLayout(holder)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.addWidget(self.left, 1)
+        hl.addStretch(0)
         sc = QScrollArea()
-        sc.setWidget(self.left)
+        sc.setWidget(holder)
         sc.setWidgetResizable(True)
         sc.setFrameShape(QFrame.NoFrame)
-        sc.setFixedWidth(430)
         sc.setStyleSheet("QScrollArea{background:transparent;} QScrollArea > QWidget > QWidget{background:transparent;}")
-        body.addWidget(sc)
+        root.addWidget(sc, 1)
+        self.views.addWidget(form)
 
-        prev, pl = card("Hesabatın önizləməsi")
-        self.preview_info = QLabel("Faylları seçin və «Hesabatı hazırla» düyməsini basın.")
-        self.preview_info.setObjectName("muted")
-        self.preview = make_preview_table()
+        # ---------- 2. Hesabat (tam ekran)
+        rep = QWidget()
+        rl = QVBoxLayout(rep)
+        rl.setContentsMargins(14, 10, 14, 10)
+        rl.setSpacing(8)
         bar = QHBoxLayout()
+        b_back = back_button("Geri qayıt")
+        b_back.setToolTip("Formaya qayıt (Esc)")
+        b_back.clicked.connect(self.show_form)
+        self.preview_info = QLabel("")
+        self.preview_info.setWordWrap(True)
+        self.preview_info.setStyleSheet(f"color:{theme.NAVY};")
+        z_out = QPushButton("−")
+        z_in = QPushButton("+")
+        z_fit = QPushButton("Ekrana sığdır")
+        for b in (z_out, z_in):
+            b.setFixedWidth(38)
+        z_out.setToolTip("Kiçilt (Ctrl + təkər)")
+        z_in.setToolTip("Böyüt (Ctrl + təkər)")
+        self.view_mode = QComboBox()
+        self.view_mode.addItems(["Görünüş: avtomatik", "Görünüş: yan-yana (forma)",
+                                 "Görünüş: alt-alta (12 ay)"])
+        self.view_mode.setToolTip("Yan-yana — PDF/Excel-dəki forma; alt-alta — hər ayda "
+                                  "hesablanma və ödəmə üst-üstə, 12 ay ekrana sığır")
+        self.view_mode.setCurrentIndex(int(self.settings.data.get("view_mode", 0)))
+        self.view_mode.currentIndexChanged.connect(self._view_changed)
         self.paper = QComboBox()
         self.paper.addItems(["Kağız: avtomatik", "Kağız: A4 albom", "Kağız: A3 albom"])
         self.paper.setCurrentIndex({"auto": 0, "A4": 1, "A3": 2}.get(self.settings.data.get("paper"), 0))
@@ -324,19 +469,131 @@ class ReportPage(QWidget):
         self.btn_xlsx = QPushButton("Excel-ə çıxar")
         for b in (self.btn_pdf, self.btn_xlsx):
             b.setObjectName("primary")
-            b.setEnabled(False)
             b.setCursor(Qt.PointingHandCursor)
         self.btn_pdf.clicked.connect(lambda: self.export("pdf"))
         self.btn_xlsx.clicked.connect(lambda: self.export("xlsx"))
-        self.preview_info.setWordWrap(True)
-        pl.addWidget(self.preview_info)
-        bar.addStretch(1)
-        bar.addWidget(self.paper)
-        bar.addWidget(self.btn_pdf)
-        bar.addWidget(self.btn_xlsx)
-        pl.addLayout(bar)
-        pl.addWidget(self.preview, 1)
-        body.addWidget(prev, 1)
+        bar.addWidget(b_back)
+        bar.addSpacing(8)
+        bar.addWidget(self.preview_info, 1)
+        for w in (self.view_mode, z_out, z_in, z_fit, self.paper, self.btn_pdf, self.btn_xlsx):
+            bar.addWidget(w)
+        rl.addLayout(bar)
+        hint = QLabel("İpucu: istənilən rəqəmə basın — onun hansı sənədlərdən yarandığı kartoçkada açılacaq.")
+        hint.setObjectName("muted")
+        hint.setStyleSheet("font-size:8.5pt;")
+        rl.addWidget(hint)
+        self.preview = ReportTable(self.show_detail)
+        z_out.clicked.connect(lambda: self.preview.apply_zoom(self.preview.pt - 0.5))
+        z_in.clicked.connect(lambda: self.preview.apply_zoom(self.preview.pt + 0.5))
+        z_fit.clicked.connect(self.preview.fit_to_width)
+        rl.addWidget(self.preview, 1)
+        self.views.addWidget(rep)
+
+        # ---------- 3. Kartoçka
+        det = QWidget()
+        dl = QVBoxLayout(det)
+        dl.setContentsMargins(14, 10, 14, 14)
+        dl.setSpacing(10)
+        dbar = QHBoxLayout()
+        d_back = back_button("Hesabata qayıt")
+        d_back.setToolTip("Əsas hesabata qayıt (Esc)")
+        d_back.clicked.connect(self.show_report)
+        dbar.addWidget(d_back)
+        dbar.addStretch(1)
+        dl.addLayout(dbar)
+        c, cl = card()
+        self.d_title = QLabel()
+        self.d_title.setStyleSheet(f"font-size:15pt; font-weight:700; color:{theme.NAVY};")
+        self.d_title.setWordWrap(True)
+        self.d_sub = QLabel()
+        self.d_sub.setObjectName("muted")
+        self.d_sub.setWordWrap(True)
+        self.d_totals = QHBoxLayout()
+        self.d_totals.setSpacing(12)
+        self.d_table = QTableWidget()
+        self.d_table.verticalHeader().setVisible(False)
+        self.d_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.d_table.setAlternatingRowColors(True)
+        self.d_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.d_table.setStyleSheet(f"alternate-background-color:{theme.BLUE_PALE};")
+        cl.addWidget(self.d_title)
+        cl.addWidget(self.d_sub)
+        cl.addLayout(self.d_totals)
+        cl.addWidget(self.d_table, 1)
+        dl.addWidget(c, 1)
+        self.views.addWidget(det)
+
+        esc = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        esc.activated.connect(self.go_back)
+
+    # --- görünüşlər arasında keçid
+    def show_form(self):
+        self.views.setCurrentIndex(0)
+        self.main.set_focus_mode(False)
+
+    def show_report(self):
+        self.views.setCurrentIndex(1)
+        self.main.set_focus_mode(True)
+
+    def go_back(self):
+        i = self.views.currentIndex()
+        if i == 2:
+            self.show_report()
+        elif i == 1:
+            self.show_form()
+
+    def show_detail(self, ref):
+        info = self.detail(ref)
+        if not info:
+            return
+        title, sub, headers, rows, money_cols, totals = info
+        self.d_title.setText(title)
+        self.d_sub.setText(sub)
+        while self.d_totals.count():
+            w = self.d_totals.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        for label, val in totals:
+            box = QFrame()
+            box.setStyleSheet(f"QFrame{{background:{theme.BLUE_LIGHT}; border-radius:8px;}}"
+                              "QLabel{background:transparent;}")
+            bl = QVBoxLayout(box)
+            bl.setContentsMargins(14, 8, 14, 8)
+            a = QLabel(label)
+            a.setObjectName("muted")
+            b = QLabel(fmt_money(val) + " AZN")
+            b.setStyleSheet(f"font-size:14pt; font-weight:700; color:{theme.NAVY};")
+            bl.addWidget(a)
+            bl.addWidget(b)
+            self.d_totals.addWidget(box)
+        self.d_totals.addStretch(1)
+        t = self.d_table
+        t.clear()
+        t.setColumnCount(len(headers))
+        t.setHorizontalHeaderLabels(headers)
+        t.setRowCount(len(rows))
+        for ri, row in enumerate(rows):
+            for ci, v in enumerate(row):
+                if ci in money_cols:
+                    it = QTableWidgetItem(cell_text(float(v or 0)))
+                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    if (v or 0) < -0.004:
+                        it.setForeground(QBrush(QColor("#B3261E")))
+                else:
+                    it = QTableWidgetItem("" if v is None else str(v))
+                t.setItem(ri, ci, it)
+        t.resizeColumnsToContents()
+        hh = t.horizontalHeader()
+        for ci, h in enumerate(headers):
+            if h == "Açıqlama":
+                hh.setSectionResizeMode(ci, QHeaderView.Stretch)
+            else:
+                t.setColumnWidth(ci, min(t.columnWidth(ci) + 16, 320))
+        self.views.setCurrentIndex(2)
+        self.main.set_focus_mode(True)
+
+    def detail(self, ref):
+        return None
 
     # --- ortaq köməkçilər
     def make_period_card(self):
@@ -401,12 +658,30 @@ class ReportPage(QWidget):
         today = fmt_date(dt.date.today())
         return [s.replace("{tarix}", today) for s in self.settings.signature if s.strip()]
 
-    def show_grid(self, grid: Grid, info: str):
-        self.grid = grid
-        fill_preview(self.preview, grid)
+    def show_grid(self, grid: Grid, info: str, stacked: Grid | None = None):
+        self.grid = grid               # PDF/Excel üçün (forma)
+        self.stacked_grid = stacked    # ekran üçün alt-alta variant
         self.preview_info.setText(info)
-        self.btn_pdf.setEnabled(True)
-        self.btn_xlsx.setEnabled(True)
+        self.show_report()
+        QTimer.singleShot(0, self._render)
+
+    def _view_changed(self, i):
+        self.settings.data["view_mode"] = i
+        self.settings.save()
+        if self.grid:
+            self._render()
+
+    def _render(self):
+        mode = self.view_mode.currentIndex()
+        t = self.preview
+        if mode == 2 and self.stacked_grid:
+            t.set_grid(self.stacked_grid)
+        else:
+            t.set_grid(self.grid)
+        t.fit_to_width()
+        if mode == 0 and self.stacked_grid and t.pt < 8:
+            t.set_grid(self.stacked_grid)
+            t.fit_to_width()
 
     def default_filename(self) -> str:
         raise NotImplementedError
@@ -662,9 +937,27 @@ class PLPage(ReportPage):
         self.settings.store_balances(bld, rep.end.isoformat(), rep.closing_cash, closings, "auto")
         self.report = rep
         g = pl_grid(rep, self.signature_lines())
-        self.show_grid(g, f"<b>{bld}</b> · {fmt_date(rep.start)} – {fmt_date(rep.end)} · "
+        self.show_grid(g, stacked=pl_grid_stacked(rep, []), info=f"<b>{bld}</b> · {fmt_date(rep.start)} – {fmt_date(rep.end)} · "
                           f"{len(rep.months)} ay · nəticə (ödəniş əsaslı): "
                           f"<b>{fmt_money(rep.result('o'))}</b>")
+
+    def detail(self, ref):
+        _, kind, item, m, basis = ref
+        r = self.report
+        txns = r.details(kind, item, m, basis)
+        what = ("Gəlir" if kind == "gelir" else "Xərc")
+        bname = "Hesablanma (tahakkuk əsaslı)" if basis == "h" else "Ödəmə (ödəniş əsaslı)"
+        per = month_label(m) if m else f"{fmt_date(r.start)} – {fmt_date(r.end)} (bütün dövr)"
+        title = item if item else ("Cəmi gəlirlər" if kind == "gelir" else "Cəmi xərclər")
+        sub = f"{what} · {bname} · {per} · {len(txns)} sənəd · Mənbə: Apsiyon"
+        headers = ["Tarix", "Maddə", "Sənəd növü", "Sənəd №", "Kontragent", "Kassa", "Açıqlama", "Məbləğ"]
+        rows = [[fmt_date(t.date), t.item, t.doc_type, t.doc_no, t.cari, t.kasa, t.note, t.amount]
+                for t in txns]
+        if item:
+            headers.pop(1)
+            rows = [x[:1] + x[2:] for x in rows]
+        total = sum(t.amount for t in txns)
+        return title, sub, headers, rows, {len(headers) - 1}, [("Cəmi məbləğ", total)]
 
     def default_filename(self):
         r = self.report
@@ -748,8 +1041,34 @@ class DebtPage(ReportPage):
             rep.rows = [r for r in rep.rows if r.closing() > 0.004]
         self.report = rep
         g = debt_grid(rep, self.signature_lines())
-        self.show_grid(g, f"<b>{rep.building}</b> · {fmt_date(rep.start)} – {fmt_date(rep.end)} · "
+        self.show_grid(g, stacked=debt_grid_stacked(rep, []), info=f"<b>{rep.building}</b> · {fmt_date(rep.start)} – {fmt_date(rep.end)} · "
                           f"{len(rep.rows)} kontragent · qalıq borc: <b>{fmt_money(rep.col_sum('closing'))}</b>")
+
+    def detail(self, ref):
+        _, daire, borclu, m = ref
+        r = self.report
+        docs = r.details(daire, borclu, m)
+        if m == "op":
+            per = "İlk saldo (keçən dövrlərdən qalan borc)"
+        elif m is None:
+            per = f"{fmt_date(r.start)} – {fmt_date(r.end)} (bütün dövr, ilk saldo daxil)"
+        else:
+            per = month_label(m)
+        title = f"{daire} · {borclu}" if daire is not None else "Bütün kontragentlər"
+        sub = f"{per} · {len(docs)} sənəd · Mənbə: Apsiyon «Detaylı Borç Listesi»"
+        headers = ["Tarix", "Mənzil", "Kontragent", "Sənəd №", "Açıqlama",
+                   "Hesablanma", "Ödəmə", "Qalıq"]
+        rows = [[fmt_date(d.date) if d.date else "Keçən borc", d.daire, d.borclu, d.doc_no,
+                 d.aciklama, d.tutar + d.gecikme, d.odenen, d.kalan] for d in docs]
+        totals = [("Hesablanma", sum(d.tutar + d.gecikme for d in docs)),
+                  ("Ödəmə", sum(d.odenen for d in docs)),
+                  ("Qalıq", sum(d.kalan for d in docs))]
+        money = {5, 6, 7}
+        if daire is not None:
+            headers = [h for i, h in enumerate(headers) if i not in (1, 2)]
+            rows = [[v for i, v in enumerate(x) if i not in (1, 2)] for x in rows]
+            money = {3, 4, 5}
+        return title, sub, headers, rows, money, totals
 
     def default_filename(self):
         r = self.report
@@ -846,9 +1165,20 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(DebtPage(self))
         self.stack.addWidget(SettingsPage(self))
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
+        QShortcut(QKeySequence("Ctrl+0"), self, activated=self._fit)
         self.nav.setCurrentRow(0)
         h.addWidget(self.nav)
         h.addWidget(self.stack, 1)
+
+
+    def set_focus_mode(self, on: bool):
+        """Hesabat açılanda yan menyu gizlənir ki, hesabat bütün ekranı tutsun."""
+        self.nav.setVisible(not on)
+
+    def _fit(self):
+        page = self.stack.currentWidget()
+        if isinstance(page, ReportPage):
+            page.preview.fit_to_width()
 
 
 def run():

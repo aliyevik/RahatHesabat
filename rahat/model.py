@@ -41,6 +41,12 @@ def full_months(start: dt.date, end: dt.date) -> list[Month]:
     return out
 
 
+def trim_months(months: list[Month], used: set) -> list[Month]:
+    """Əvvəldə və sonda məlumatı olmayan boş ayları atır."""
+    idx = [i for i, m in enumerate(months) if m in used]
+    return months[idx[0]: idx[-1] + 1] if idx else months
+
+
 def fmt_date(d: dt.date) -> str:
     return d.strftime("%d.%m.%Y")
 
@@ -59,6 +65,7 @@ class PLRow:
     opening: float = 0.0
     h: dict = field(default_factory=dict)   # Month -> hesablama
     o: dict = field(default_factory=dict)   # Month -> ödəmə
+    txns: dict = field(default_factory=dict)  # (Month, "h"|"o") -> [Txn]
 
     def total_h(self):
         return sum(self.h.values())
@@ -104,6 +111,18 @@ class PLReport:
         """Nəticə (Gəlir − Xərc)."""
         return self.gelir_sum(attr, m) - self.gider_sum(attr, m)
 
+    def details(self, kind: str, item: str | None, m: Month | None, basis: str):
+        """Hüceyrənin mənbə əməliyyatları."""
+        rows = self.gelir if kind == "gelir" else self.gider
+        out = []
+        for r in rows:
+            if item is not None and r.item != item:
+                continue
+            for (mm, b), lst in r.txns.items():
+                if b == basis and (m is None or mm == m):
+                    out.extend(lst)
+        return sorted(out, key=lambda t: (t.date, t.doc_no))
+
     def cash_after(self, m: Month) -> float:
         bal = self.opening_cash
         for mm in self.months:
@@ -119,7 +138,15 @@ class PLReport:
 
 def build_pl(files: dict[str, GelirGiderFile], start: dt.date, end: dt.date,
              opening_cash: float, openings: dict[str, float]) -> PLReport:
+    # Apsiyon faylının dövründən kənara çıxmırıq (məs. 09.11 — noyabr yarımçıqdır)
+    periods = [f.period for f in files.values() if f and f.period]
+    if periods:
+        start = max(start, min(p[0] for p in periods))
+        end = min(end, max(p[1] for p in periods))
     months = full_months(start, end)
+    mset = set(months)
+    used = {(t.date.year, t.date.month) for f in files.values() if f for t in f.rows}
+    months = trim_months(months, used & mset)
     mset = set(months)
     start, end = effective_range(start, end, months)
 
@@ -134,8 +161,10 @@ def build_pl(files: dict[str, GelirGiderFile], start: dt.date, end: dt.date,
                 m = (t.date.year, t.date.month)
                 if m not in mset:
                     continue
-                tgt = r.h if basis == "hesablama" else r.o
+                b = "h" if basis == "hesablama" else "o"
+                tgt = r.h if b == "h" else r.o
                 tgt[m] = tgt.get(m, 0.0) + t.amount
+                r.txns.setdefault((m, b), []).append(t)
         for name, r in rows.items():
             r.opening = float(openings.get(f"{kind}:{name}", 0.0))
         # Dövrdə heç bir hərəkəti və ilk qalığı olmayan maddələri göstərmirik
@@ -184,6 +213,7 @@ class DebtRow:
     h: dict = field(default_factory=dict)
     o: dict = field(default_factory=dict)
     q: dict = field(default_factory=dict)
+    docs: dict = field(default_factory=dict)  # Month | "op" -> [DebtDoc]
 
     def total(self, attr):
         return sum(getattr(self, attr).values())
@@ -209,6 +239,17 @@ class DebtReport:
             return sum(r.total(attr) for r in self.rows)
         return sum(getattr(r, attr).get(m, 0.0) for r in self.rows)
 
+    def details(self, daire: str | None, borclu: str | None, m):
+        """m: Month, "op" (ilk saldo) və ya None (hamısı)."""
+        out = []
+        for r in self.rows:
+            if daire is not None and (r.daire, r.borclu) != (daire, borclu):
+                continue
+            for k, lst in r.docs.items():
+                if m is None or k == m:
+                    out.extend(lst)
+        return sorted(out, key=lambda d: (d.date or dt.date.min, _natural_key(d.daire), d.doc_no))
+
 
 def _natural_key(s: str):
     return [int(p) if p.isdigit() else p.lower() for p in re.split(r"(\d+)", s)]
@@ -216,6 +257,9 @@ def _natural_key(s: str):
 
 def build_debt(f: DebtFile, start: dt.date, end: dt.date) -> DebtReport:
     months = full_months(start, end)
+    mset = set(months)
+    used = {(d.date.year, d.date.month) for d in f.docs if d.date}
+    months = trim_months(months, used & mset)
     mset = set(months)
     start, end = effective_range(start, end, months)
     first = dt.date(months[0][0], months[0][1], 1) if months else start
@@ -230,9 +274,11 @@ def build_debt(f: DebtFile, start: dt.date, end: dt.date) -> DebtReport:
             r.op_h += d.tutar + d.gecikme
             r.op_o += d.odenen
             r.op_q += d.kalan
+            r.docs.setdefault("op", []).append(d)
             continue
         r.h[m] = r.h.get(m, 0.0) + d.tutar + d.gecikme
         r.o[m] = r.o.get(m, 0.0) + d.odenen
         r.q[m] = r.q.get(m, 0.0) + d.kalan
+        r.docs.setdefault(m, []).append(d)
     ordered = sorted(rows.values(), key=lambda r: (_natural_key(r.daire), r.borclu))
     return DebtReport(f.building, start, end, months, ordered)

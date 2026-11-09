@@ -17,6 +17,11 @@ class Txn:
     date: dt.date
     item: str
     amount: float
+    doc_type: str = ""
+    doc_no: str = ""
+    cari: str = ""
+    kasa: str = ""
+    note: str = ""
 
 
 @dataclass
@@ -35,6 +40,7 @@ class GelirGiderFile:
 
 @dataclass
 class DebtDoc:
+    doc_no: str
     daire: str
     borclu: str
     date: dt.date | None      # None = DEVREDEN BORÇLAR (əvvəldən keçən borc)
@@ -158,6 +164,10 @@ def load_gelir_gider(path: str) -> GelirGiderFile:
         raise ParseError(f"Sütun başlıqları tapılmadı: {path}")
     dcol, icol, tcol = cols["Evrak Tarihi"], cols[item_hdr], cols["Tutar"]
 
+    def opt(row, name):
+        i = cols.get(name)
+        return _clean(row[i - 1]) if i and len(row) >= i else ""
+
     res = GelirGiderFile(path, kind, basis, building, _period(title))
     for row in ws.iter_rows(min_row=hrow + 1, values_only=True):
         d = _as_date(row[dcol - 1]) if len(row) >= dcol else None
@@ -166,7 +176,10 @@ def load_gelir_gider(path: str) -> GelirGiderFile:
         item = _clean(row[icol - 1])
         if not item:
             continue
-        res.rows.append(Txn(d, item, _num(row[tcol - 1])))
+        res.rows.append(Txn(d, item, _num(row[tcol - 1]),
+                            doc_type=opt(row, "Evrak Tipi"), doc_no=opt(row, "Evrak No"),
+                            cari=opt(row, "Cari"), kasa=opt(row, "Kasa"),
+                            note=opt(row, "Açıklama")))
     wb.close()
     return res
 
@@ -200,6 +213,7 @@ def load_debt_list(path: str) -> DebtFile:
         if not d and not devreden:
             continue
         res.docs.append(DebtDoc(
+            doc_no=_clean(row[c["Evrak No"]]) if "Evrak No" in c else "",
             daire=daire,
             borclu=borclu,
             date=None if devreden else d,

@@ -19,6 +19,8 @@ STYLE_BG = {
     "total": TOTAL_BG,
     "result": RESULT_BG,
     "cash": CASH_BG,
+    "alt": "#F2F7FD",
+    "alt2": "#E8F0FA",
 }
 STYLE_FG = {"head": WHITE, "sub": WHITE}
 STYLE_BOLD = {"head", "sub", "section", "total", "result", "cash"}
