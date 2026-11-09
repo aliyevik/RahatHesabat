@@ -51,6 +51,8 @@ QMainWindow, #page {{ background: {theme.BLUE_PALE}; }}
 QPushButton {{ background: white; border: 1px solid {theme.BORDER}; border-radius: 6px;
                padding: 7px 14px; min-height: 20px; }}
 QPushButton:hover {{ border-color: {theme.BLUE}; background: {theme.BLUE_PALE}; }}
+QPushButton:checked {{ background: {theme.BLUE_LIGHT}; border: 1px solid {theme.BLUE};
+               color: {theme.NAVY}; font-weight: 600; }}
 QPushButton#primary {{ background: {theme.BLUE}; color: white; border: none; font-weight: 600; }}
 QPushButton#primary:hover {{ background: {theme.NAVY}; }}
 QPushButton#primary:disabled, QPushButton:disabled {{ background: #DDE3EA; color: #8894A3; }}
@@ -228,11 +230,20 @@ def cell_text(v) -> str:
 class ReportTable(QTableWidget):
     """Hesabat cədvəli: miqyas (zoom), ekrana sığdırma və rəqəmə basanda kartoçka."""
 
-    def __init__(self, on_ref):
+    def __init__(self, on_ref, on_move=None, on_zoom=None):
         super().__init__()
         self.on_ref = on_ref
+        self.on_move = on_move
+        self.on_zoom = on_zoom
         self.grid: Grid | None = None
         self.refs: list = []
+        self.drags: list = []
+        self._drag = None          # (açar, başlanğıc nöqtə)
+        self._dragging = False
+        self._target = None
+        self.indicator = QFrame(self.viewport())
+        self.indicator.setStyleSheet(f"background:{theme.BLUE}; border-radius:1px;")
+        self.indicator.hide()
         self.pt = 9.0
         self.horizontalHeader().setVisible(False)
         self.verticalHeader().setVisible(False)
@@ -258,12 +269,80 @@ class ReportTable(QTableWidget):
             self.on_ref(ref)
 
     def _entered(self, r, c):
-        self.viewport().setCursor(Qt.PointingHandCursor if self._ref_at(r, c) is not None
-                                  else Qt.ArrowCursor)
+        if self._dragging:
+            return
+        if self._ref_at(r, c) is not None:
+            cur = Qt.PointingHandCursor
+        elif self.on_move and self._drag_key(self.item(r, c)) is not None:
+            cur = Qt.OpenHandCursor
+        else:
+            cur = Qt.ArrowCursor
+        self.viewport().setCursor(cur)
+
+    # --- sətri tutub dartmaq (maddələrin sırası)
+    def _drag_key(self, it):
+        if it is None:
+            return None
+        i = it.data(Qt.UserRole + 1)
+        return self.drags[i] if isinstance(i, int) and 0 <= i < len(self.drags) else None
+
+    def _drag_at(self, pos):
+        idx = self.indexAt(pos)
+        if not idx.isValid():
+            return None, None
+        return self._drag_key(self.item(idx.row(), idx.column())), idx
+
+    def mousePressEvent(self, e):
+        pos = e.position().toPoint()
+        if e.button() == Qt.LeftButton and self.on_move:
+            key, _ = self._drag_at(pos)
+            if key is not None:
+                self._drag = (key, pos)
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        pos = e.position().toPoint()
+        if self._drag and (pos - self._drag[1]).manhattanLength() > 6:
+            self._dragging = True
+            self.viewport().setCursor(Qt.ClosedHandCursor)
+            vh = self.viewport().height()
+            sb = self.verticalScrollBar()
+            if pos.y() < 24:
+                sb.setValue(sb.value() - 12)
+            elif pos.y() > vh - 24:
+                sb.setValue(sb.value() + 12)
+            key, idx = self._drag_at(pos)
+            src = self._drag[0]
+            if key is not None and key[0] == src[0] and key != src:
+                rect = self.visualRect(idx)
+                before = pos.y() < rect.center().y()
+                y = rect.top() if before else rect.bottom()
+                self.indicator.setGeometry(0, y - 1, self.viewport().width(), 3)
+                self.indicator.show()
+                self.indicator.raise_()
+                self._target = (key, before)
+            else:
+                self.indicator.hide()
+                self._target = None
+            return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if self._dragging:
+            self.indicator.hide()
+            src, tgt = self._drag[0], self._target
+            self._drag, self._dragging, self._target = None, False, None
+            self.viewport().setCursor(Qt.ArrowCursor)
+            if tgt:
+                self.on_move(src, tgt[0], tgt[1])
+            return
+        self._drag = None
+        super().mouseReleaseEvent(e)
 
     def set_grid(self, grid: Grid):
         self.grid = grid
         self.refs = []
+        self.drags = []
         self.clear()
         self.clearSpans()
         rows = grid.head_rows + grid.rows
@@ -293,12 +372,16 @@ class ReportTable(QTableWidget):
                     it.setData(Qt.UserRole, len(self.refs))
                     self.refs.append(cell.ref)
                     it.setToolTip("Bu rəqəmin necə yarandığını görmək üçün basın")
+                if cell.drag is not None and self.on_move:
+                    it.setData(Qt.UserRole + 1, len(self.drags))
+                    self.drags.append(cell.drag)
+                    it.setToolTip("Tutub yuxarı-aşağı dartın — maddənin yerini dəyişin")
                 self.setItem(ri, ci, it)
                 if cell.colspan > 1 or cell.rowspan > 1:
                     self.setSpan(ri, ci, cell.rowspan, cell.colspan)
         self.apply_zoom(self.pt)
 
-    def _widths(self, pt):
+    def _widths(self, pt, compact=False):
         f = QFont(self.font())
         f.setPointSizeF(pt)
         fb = QFont(f)
@@ -308,7 +391,9 @@ class ReportTable(QTableWidget):
         w = [0] * g.ncols
         for cells in g.head_rows + g.rows:
             for ci, cell in enumerate(cells):
-                if cell is None or cell.colspan > 1 or cell.style in (NOTE, "sub"):
+                if cell is None or cell.colspan > 1 or cell.style == NOTE:
+                    continue
+                if cell.style == "sub" and compact:
                     continue
                 txt = cell_text(cell.value)
                 m = fmb if cell.style in theme.STYLE_BOLD else fm
@@ -327,7 +412,7 @@ class ReportTable(QTableWidget):
                 w[ci] = min(w[ci], name_cap)
         return w
 
-    def apply_zoom(self, pt):
+    def apply_zoom(self, pt, compact=False):
         if not self.grid:
             return
         self.pt = max(5.5, min(16.0, pt))
@@ -341,7 +426,7 @@ class ReportTable(QTableWidget):
                 f.setPointSizeF(self.pt)
                 f.setBold(cell.style in theme.STYLE_BOLD)
                 it.setFont(f)
-        widths = self._widths(self.pt)
+        widths = self._widths(self.pt, compact)
         for ci, w in enumerate(widths):
             self.setColumnWidth(ci, w)
         # Dar sütunlarda «Hesablanma» başlığını qısaldırıq
@@ -371,13 +456,17 @@ class ReportTable(QTableWidget):
             return
         avail = self.viewport().width() - 4
         pt = 11.0
-        while pt > 6.5 and sum(self._widths(pt)) > avail:
+        while pt > 6.5 and sum(self._widths(pt, True)) > avail:
             pt -= 0.25
-        self.apply_zoom(pt)
+        self.apply_zoom(pt, compact=True)
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.ControlModifier:
-            self.apply_zoom(self.pt + (0.5 if e.angleDelta().y() > 0 else -0.5))
+            d = 0.5 if e.angleDelta().y() > 0 else -0.5
+            if self.on_zoom:
+                self.on_zoom(d)
+            else:
+                self.apply_zoom(self.pt + d)
             e.accept()
             return
         super().wheelEvent(e)
@@ -393,6 +482,8 @@ def back_button(text: str) -> QPushButton:
 # ===================================================================== Ümumi səhifə
 class ReportPage(QWidget):
     """Üç görünüş: 1) forma, 2) tam ekran hesabat, 3) rəqəmin kartoçkası."""
+
+    can_reorder = False
 
     def __init__(self, main: "MainWindow", title: str, subtitle: str):
         super().__init__()
@@ -450,18 +541,20 @@ class ReportPage(QWidget):
         self.preview_info.setStyleSheet(f"color:{theme.NAVY};")
         z_out = QPushButton("−")
         z_in = QPushButton("+")
-        z_fit = QPushButton("Ekrana sığdır")
+        self.z_fit = QPushButton("Ekrana sığdır")
+        self.z_fit.setCheckable(True)
+        self.z_fit.setToolTip("Basılı olanda hesabat ekrana sığdırılır (lazım olsa Hesablanma/Ödəmə "
+                              "üst-üstə yığılır). Yenidən basanda yan-yana formaya qayıdır. (Ctrl+0)")
+        self.z_fit.toggled.connect(lambda _: self._render())
         for b in (z_out, z_in):
             b.setFixedWidth(38)
         z_out.setToolTip("Kiçilt (Ctrl + təkər)")
         z_in.setToolTip("Böyüt (Ctrl + təkər)")
-        self.view_mode = QComboBox()
-        self.view_mode.addItems(["Görünüş: avtomatik", "Görünüş: yan-yana (forma)",
-                                 "Görünüş: alt-alta (12 ay)"])
-        self.view_mode.setToolTip("Yan-yana — PDF/Excel-dəki forma; alt-alta — hər ayda "
-                                  "hesablanma və ödəmə üst-üstə, 12 ay ekrana sığır")
-        self.view_mode.setCurrentIndex(int(self.settings.data.get("view_mode", 0)))
-        self.view_mode.currentIndexChanged.connect(self._view_changed)
+        self.user_pt = float(self.settings.data.get("zoom_pt", 9.0))
+        self.btn_reset = QPushButton("Sıranı sıfırla")
+        self.btn_reset.setToolTip("Maddələrin sırasını Apsiyondakı ilkin sıraya qaytar")
+        self.btn_reset.clicked.connect(self.reset_order)
+        self.btn_reset.setVisible(False)
         self.paper = QComboBox()
         self.paper.addItems(["Kağız: avtomatik", "Kağız: A4 albom", "Kağız: A3 albom"])
         self.paper.setCurrentIndex({"auto": 0, "A4": 1, "A3": 2}.get(self.settings.data.get("paper"), 0))
@@ -475,17 +568,19 @@ class ReportPage(QWidget):
         bar.addWidget(b_back)
         bar.addSpacing(8)
         bar.addWidget(self.preview_info, 1)
-        for w in (self.view_mode, z_out, z_in, z_fit, self.paper, self.btn_pdf, self.btn_xlsx):
+        for w in (self.btn_reset, z_out, z_in, self.z_fit, self.paper, self.btn_pdf, self.btn_xlsx):
             bar.addWidget(w)
         rl.addLayout(bar)
-        hint = QLabel("İpucu: istənilən rəqəmə basın — onun hansı sənədlərdən yarandığı kartoçkada açılacaq.")
+        hint = QLabel("İpucu: istənilən rəqəmə basın — onun hansı sənədlərdən yarandığı kartoçkada açılacaq."
+                      + ("  Maddənin adını tutub yuxarı-aşağı dartsanız, yeri dəyişəcək."
+                         if self.can_reorder else ""))
         hint.setObjectName("muted")
         hint.setStyleSheet("font-size:8.5pt;")
         rl.addWidget(hint)
-        self.preview = ReportTable(self.show_detail)
-        z_out.clicked.connect(lambda: self.preview.apply_zoom(self.preview.pt - 0.5))
-        z_in.clicked.connect(lambda: self.preview.apply_zoom(self.preview.pt + 0.5))
-        z_fit.clicked.connect(self.preview.fit_to_width)
+        self.preview = ReportTable(self.show_detail, self.move_item if self.can_reorder else None,
+                                   self.zoom)
+        z_out.clicked.connect(lambda: self.zoom(-0.5))
+        z_in.clicked.connect(lambda: self.zoom(0.5))
         rl.addWidget(self.preview, 1)
         self.views.addWidget(rep)
 
@@ -665,23 +760,40 @@ class ReportPage(QWidget):
         self.show_report()
         QTimer.singleShot(0, self._render)
 
-    def _view_changed(self, i):
-        self.settings.data["view_mode"] = i
-        self.settings.save()
-        if self.grid:
-            self._render()
-
-    def _render(self):
-        mode = self.view_mode.currentIndex()
+    def _render(self, keep=False):
         t = self.preview
-        if mode == 2 and self.stacked_grid:
-            t.set_grid(self.stacked_grid)
+        if not self.grid:
+            return
+        hs, vs = t.horizontalScrollBar().value(), t.verticalScrollBar().value()
+        if self.z_fit.isChecked():
+            t.set_grid(self.grid)
+            t.fit_to_width()
+            if self.stacked_grid and t.pt < 8:
+                t.set_grid(self.stacked_grid)
+                t.fit_to_width()
         else:
             t.set_grid(self.grid)
-        t.fit_to_width()
-        if mode == 0 and self.stacked_grid and t.pt < 8:
-            t.set_grid(self.stacked_grid)
-            t.fit_to_width()
+            t.apply_zoom(self.user_pt)
+        if keep:
+            t.horizontalScrollBar().setValue(hs)
+            t.verticalScrollBar().setValue(vs)
+
+    def zoom(self, delta):
+        """Böyüt/kiçilt: həmişə yan-yana formada."""
+        base = self.preview.pt if not self.z_fit.isChecked() else self.user_pt
+        self.user_pt = max(6.0, min(16.0, base + delta))
+        self.settings.data["zoom_pt"] = self.user_pt
+        if self.z_fit.isChecked():
+            self.z_fit.blockSignals(True)
+            self.z_fit.setChecked(False)
+            self.z_fit.blockSignals(False)
+        self._render(keep=True)
+
+    def move_item(self, src, dst, before):
+        pass
+
+    def reset_order(self):
+        pass
 
     def default_filename(self) -> str:
         raise NotImplementedError
@@ -726,6 +838,8 @@ class ReportPage(QWidget):
 
 # ===================================================================== 1. Mənfəət / zərər
 class PLPage(ReportPage):
+    can_reorder = True
+
     def __init__(self, main):
         super().__init__(main, "Binalar üzrə mənfəət / zərər",
                          "Apsiyondan çıxarılmış 4 Gəlir/Gider raporunu seçin (və ya bu pəncərəyə sürüşdürün). "
@@ -936,10 +1050,57 @@ class PLPage(ReportPage):
         closings.update({f"gider:{x.item}": x.closing() for x in rep.gider})
         self.settings.store_balances(bld, rep.end.isoformat(), rep.closing_cash, closings, "auto")
         self.report = rep
+        self._orig = {"gelir": [x.item for x in rep.gelir], "gider": [x.item for x in rep.gider]}
+        self.apply_order()
+        self.btn_reset.setVisible(True)
         g = pl_grid(rep, self.signature_lines())
         self.show_grid(g, stacked=pl_grid_stacked(rep, []), info=f"<b>{bld}</b> · {fmt_date(rep.start)} – {fmt_date(rep.end)} · "
                           f"{len(rep.months)} ay · nəticə (ödəniş əsaslı): "
                           f"<b>{fmt_money(rep.result('o'))}</b>")
+
+    # --- maddələrin sırası (tutub dartmaqla dəyişir, bina üzrə yadda qalır)
+    def _order_store(self):
+        return self.settings.data.setdefault("order", {}).setdefault(self.report.building, {})
+
+    def apply_order(self):
+        saved = self._order_store()
+        for kind in ("gelir", "gider"):
+            names = saved.get(kind)
+            if not names:
+                continue
+            pos = {n: i for i, n in enumerate(names)}
+            lst = getattr(self.report, kind)
+            orig = {r.item: i for i, r in enumerate(lst)}
+            lst.sort(key=lambda r: (pos.get(r.item, len(pos) + orig[r.item]),))
+
+    def _regrid(self):
+        self.grid = pl_grid(self.report, self.signature_lines())
+        self.stacked_grid = pl_grid_stacked(self.report, [])
+        self._render(keep=True)
+
+    def move_item(self, src, dst, before):
+        kind = src[0]
+        lst = getattr(self.report, kind)
+        names = [r.item for r in lst]
+        if src[1] not in names or dst[1] not in names:
+            return
+        row = lst.pop(names.index(src[1]))
+        j = [r.item for r in lst].index(dst[1])
+        lst.insert(j if before else j + 1, row)
+        store = self._order_store()
+        # əvvəl saxlanmış, amma bu dövrdə olmayan maddələrin yeri də qorunsun
+        old = [n for n in store.get(kind, []) if n not in {r.item for r in lst}]
+        store[kind] = [r.item for r in lst] + old
+        self.settings.save()
+        self._regrid()
+
+    def reset_order(self):
+        self._order_store().clear()
+        self.settings.save()
+        for kind in ("gelir", "gider"):
+            pos = {n: i for i, n in enumerate(self._orig[kind])}
+            getattr(self.report, kind).sort(key=lambda r: pos.get(r.item, 0))
+        self._regrid()
 
     def detail(self, ref):
         _, kind, item, m, basis = ref
@@ -1178,7 +1339,7 @@ class MainWindow(QMainWindow):
     def _fit(self):
         page = self.stack.currentWidget()
         if isinstance(page, ReportPage):
-            page.preview.fit_to_width()
+            page.z_fit.toggle()
 
 
 def run():

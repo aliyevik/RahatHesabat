@@ -18,6 +18,7 @@ class Cell:
     rowspan: int = 1
     align: str = "right"        # left | center | right
     ref: tuple | None = None    # ətraflı baxış (kartoçka) üçün açar
+    drag: tuple | None = None   # (növ, maddə) — sətri tutub dartmaq üçün
 
 
 @dataclass
@@ -75,7 +76,7 @@ def pl_grid(r: PLReport, signature: list[str]) -> Grid:
         out = []
         for x in rows:
             it = x.item
-            line = [Cell(x.item, ITEM, align="left"), _num(x.opening)]
+            line = [Cell(x.item, ITEM, align="left", drag=(kind, it)), _num(x.opening)]
             for m in M:
                 line += [_num(x.h.get(m, 0.0), ref=("pl", kind, it, m, "h")),
                          _num(x.o.get(m, 0.0), ref=("pl", kind, it, m, "o"))]
@@ -192,7 +193,8 @@ def pl_grid_stacked(r: PLReport, signature: list[str]) -> Grid:
 
     def pair(label, style, opening, hv, ov, th, to, closing, kind, item, label_style=None):
         st2 = style if style != ITEM else "alt"
-        a = [Cell(label, label_style or style, rowspan=2, align="left"), Cell(KIND_H, style, align="left"),
+        a = [Cell(label, label_style or style, rowspan=2, align="left",
+                  drag=(kind, item) if kind and item else None), Cell(KIND_H, style, align="left"),
              Cell(None if opening is None else round(opening, 2), style, rowspan=2)]
         a += [_num(hv(m), style, ("pl", kind, item, m, "h") if kind else None) for m in M]
         a += [_num(th, style, ("pl", kind, item, None, "h") if kind else None),
