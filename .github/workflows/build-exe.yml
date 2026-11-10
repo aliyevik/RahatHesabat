@@ -24,7 +24,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: EXE yığ
+      - name: EXE yığ — Rahat Hesabat
         run: >
           pyinstaller --noconfirm --clean --onefile --windowed
           --name RahatHesabat
@@ -33,14 +33,31 @@ jobs:
           --exclude-module tkinter
           main.py
 
-      - name: Yüklənə bilən fayl
+      - name: EXE yığ — ƏDV Hesabatı
+        run: >
+          pyinstaller --noconfirm --onefile --windowed
+          --name EDV_Hesabati
+          --icon assets/edv.ico
+          --add-data "assets;assets"
+          --exclude-module tkinter
+          edv_main.py
+
+      - name: Yüklənə bilən fayl — Rahat Hesabat
         uses: actions/upload-artifact@v4
         with:
           name: RahatHesabat-exe
           path: dist/RahatHesabat.exe
 
+      - name: Yüklənə bilən fayl — ƏDV Hesabatı
+        uses: actions/upload-artifact@v4
+        with:
+          name: EDV-Hesabati-exe
+          path: dist/EDV_Hesabati.exe
+
       - name: Release (yalnız v* teqi ilə)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/RahatHesabat.exe
+          files: |
+            dist/RahatHesabat.exe
+            dist/EDV_Hesabati.exe

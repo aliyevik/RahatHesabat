@@ -29,3 +29,18 @@ Hər dəfə `main` budağına yeni dəyişiklik göndəriləndə GitHub Actions 
 pip install -r requirements.txt
 python main.py
 ```
+
+---
+
+# ƏDV Hesabatı (təqdim edir FMC)
+
+Ayrıca proqram (`EDV_Hesabati.exe`, kodu `edv/` qovluğunda). e-taxes-dan alınan alış və satış
+qaimələri, ƏDV depozit çıxarışı və Kapital Bank çıxarışı olduğu kimi yüklənir; şirkət VÖEN-i fayllardan
+oxunur və bütün faylların eyni şirkətə aid olduğu yoxlanılır.
+
+* **ƏDV yekunu** — aylar üzrə: alıcılardan banka daxil olan × 18% = hesablanmış ƏDV, depozitə daxil olan
+  ƏDV, əvəzləşdirilən ƏDV (308), büdcəyə ödənilməli ƏDV, depozit qalığı.
+* **Əvəzləşmə** — alış qaimələrinə ödənişlər VÖEN üzrə FIFO ilə bağlanır (bank → ƏDV-siz hissə,
+  depozit → ƏDV). e-taxes «Əlavə 1» yükləmə faylı (308 | seriya | nömrə | ödənilmiş məbləğ).
+* **Satış**, **Bank hesabatı**, **Kontragentlər** (üzləşmə aktı ilə), **Yoxlanılmalı** — aydın olmayan
+  hər əməliyyat ayrıca qrupda.

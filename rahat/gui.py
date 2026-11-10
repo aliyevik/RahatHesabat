@@ -368,6 +368,8 @@ class ReportTable(QTableWidget):
                     it.setForeground(QBrush(QColor(fg)))
                 elif isinstance(v, (int, float)) and v < -0.004:
                     it.setForeground(QBrush(QColor("#B3261E")))
+                if isinstance(v, str) and len(v) > 40:
+                    it.setToolTip(v)
                 if cell.ref is not None and isinstance(v, (int, float)) and abs(v) >= 0.005:
                     it.setData(Qt.UserRole, len(self.refs))
                     self.refs.append(cell.ref)
@@ -406,10 +408,11 @@ class ReportTable(QTableWidget):
                 w[ci] = max(w[ci], ww + 8)
         sub_min = fmb.horizontalAdvance("Ödəmə") + 8
         w = [max(x, sub_min) for x in w]
-        name_cap = fm.horizontalAdvance("M" * 20)
+        mw = fm.horizontalAdvance("M")
         for ci in range(g.ncols):
             if g.col_widths[ci] >= 2.5:
-                w[ci] = min(w[ci], name_cap)
+                cw = g.col_widths[ci]
+                w[ci] = min(w[ci], mw * (20 if cw < 3.5 else int(8 * cw)))
         return w
 
     def apply_zoom(self, pt, compact=False):

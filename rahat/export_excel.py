@@ -86,7 +86,7 @@ def save_grid_xlsx(grid: Grid, path: str, sheet_title: str = "Hesabat",
     for i, w in enumerate(grid.col_widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = max(8, w * 10)
 
-    ws.freeze_panes = ws.cell(header_start + len(grid.head_rows), 2 if grid.col_widths[0] > 2 else 3)
+    ws.freeze_panes = f"{get_column_letter(2 if grid.col_widths[0] > 2 else 3)}{header_start + len(grid.head_rows)}"
 
     row += 1
     if grid.footnote:
