@@ -170,6 +170,7 @@ class Result:
     # ƏDV depozitə gələn ƏDV bankdakı puldan çoxdursa, baza ƏDV / 18% götürülür
     taxable: list = field(default_factory=list)
     taxable0: list = field(default_factory=list)   # 0% / azad qaimələrə daxilolmalar
+    budget_opening: float = 0.0                    # büdcə ilə ƏDV hesablaşması: ilkin qalıq
 
     # ---- köməkçi süzgəclər
     def in_period(self, d, a, b):
@@ -512,7 +513,8 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
                   s1 + s2, unalloc, sl1 + sl2, parties, issues, dep_open, rng,
                   (float(openings["bank"]) if openings.get("bank") is not None
                    else sum((f.opening or 0) for f in files if f.kind == "bank")), od,
-                  base, dict(adv_used), dict(adv_uses), dict(mt_adv), taxable, taxable0)
+                  base, dict(adv_used), dict(adv_uses), dict(mt_adv), taxable, taxable0,
+                  float(openings.get("budget") or 0.0))
 
 
 def check_files(files: list[SourceFile]) -> list[str]:

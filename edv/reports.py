@@ -112,6 +112,7 @@ class Summary:
         self.alloc_pending = [x for x in R.allocs if inp(x.date) and x.invoice.status_group == "gozleyen"]
         self.dep_budget = [o for o in R.deposit if o.mexaric and o.is_budget and o.executed and inp(o.date)]
         self.dep_all = [o for o in R.deposit if o.executed]
+        self.taxable = [x for x in R.taxable if inp(x[0])]
 
     def by_m(self, items, date_of, val, m=None):
         return round(sum(val(x) for x in items if m is None or mkey(date_of(x)) == m), 2)
@@ -120,7 +121,8 @@ class Summary:
         recv = lambda m=None: self.by_m(self.recv, lambda r: r.op.date, lambda r: r.op.amount, m)
         alloc_vat = lambda m=None: self.by_m([x for x in self.alloc if x.kind == "vat"], lambda x: x.date,
                                              lambda x: x.amount, m)
-        hes = lambda m=None: round(recv(m) * VAT_RATE, 2)
+        tax = lambda m=None: self.by_m(self.taxable, lambda x: x[0], lambda x: x[2], m)
+        hes = lambda m=None: round(tax(m) * VAT_RATE, 2)
         return [
             ("Satış — hesablanmış ƏDV", None, None),
             ("Satış MT qaimələri (ƏDV-siz)", "sales_inv",
@@ -128,7 +130,8 @@ class Summary:
             ("Satış MT qaimələri üzrə ƏDV", "sales_inv",
              lambda m=None: self.by_m(self.sales_inv, lambda i: i.date, lambda i: i.edv, m)),
             ("Alıcılardan bank hesabına daxil olan məbləğ", "recv", recv),
-            ("Hesablanmış ƏDV (daxil olan × 18%)", "recv", hes),
+            ("ƏDV-yə cəlb olunan məbləğ (bank və ya ƏDV÷18%)", "taxable", tax),
+            ("Hesablanmış ƏDV (cəlb olunan × 18%)", "taxable", hes),
             ("Alıcılardan ƏDV depozitə daxil olan ƏDV", "dep_in",
              lambda m=None: self.by_m(self.dep_in, lambda o: o.date, lambda o: o.medaxil, m)),
             ("Fərq: hesablanmış − depozitə daxil olan", None,
@@ -157,6 +160,9 @@ class Summary:
              lambda m=None: self.by_m(self.dep_budget, lambda o: o.date, lambda o: o.mexaric, m)),
         ]
 
+    def _row(self, prefix):
+        return next(fn for label, key, fn in self.rows_def() if fn and label.startswith(prefix))
+
     def dep_balance(self, m: Month) -> float:
         nxt = dt.date(m[0] + m[1] // 12, m[1] % 12 + 1, 1)
         end = min(nxt - dt.timedelta(days=1), self.b)
@@ -174,7 +180,7 @@ class Summary:
             if fn is None:
                 g.rows.append([Cell(label, SECTION, align="left", colspan=ncols)] + [None] * (ncols - 1))
                 continue
-            style = RESULT if label.startswith(("Büdcəyə", "Hesablanmış", "308 · Əvəz")) else ITEM
+            style = RESULT if label.startswith(("Büdcəyə", "Hesablanmış", "308 · Əvəz", "ƏDV-yə cəlb")) else ITEM
             line = [t(label, style)]
             for m in M:
                 line.append(n(fn(m), style, (key, m) if key else None))
@@ -186,8 +192,8 @@ class Summary:
         g.rows.append([t("ƏDV depozit qalığı (" + ("ay sonuna" if M else f"{fmt_date(self.b)} tarixinə") + ")", CASH)] +
                       [n(self.dep_balance(m), CASH) for m in M] + [n(self.dep_balance(self.months[-1]), CASH)])
         g.top_lines = [("Şirkət:", f"{self.R.company_name} (VÖEN {self.R.company_voen})"),
-                       ("Hesablanmış ƏDV (dövr üzrə):", self.rows_def()[4][2]()),
-                       ("Əvəzləşdirilən ƏDV (dövr üzrə):", self.rows_def()[11][2]())]
+                       ("Hesablanmış ƏDV (dövr üzrə):", self._row("Hesablanmış ƏDV")()),
+                       ("Əvəzləşdirilən ƏDV (dövr üzrə):", self._row("308 · Əvəzləşdirilən")())]
         g.footnote = ("Hesablanmış ƏDV — alıcılardan bank hesabına daxil olan məbləğ × 18%. "
                       "Əvəzləşmə — alış qaimələrinə ödənişlər VÖEN üzrə FIFO metodu ilə bağlanır; "
                       "bank ödənişi ƏDV-siz hissəni, depozit ödənişi ƏDV-ni bağlayır. "
@@ -208,6 +214,15 @@ class Summary:
             return Detail("Alış qaimələri (təsdiqlənmiş)", f"{when} · {len(items)} qaimə",
                           INV_HEAD, [_inv_row(i) for i in items], {5, 6, 7},
                           [("ƏDV-siz", sum(i.edvsiz for i in items)), ("ƏDV", sum(i.edv for i in items))])
+        if key == "taxable":
+            items = [x for x in self.taxable if f(x[0])]
+            s = sum(x[2] for x in items)
+            return Detail("ƏDV-yə cəlb olunan məbləğ", f"{when} · pul nə vaxt gəlibsə həmin aya; ƏDV depozitə "
+                          f"gələn ƏDV bankdakı puldan çoxdursa baza ƏDV÷18%",
+                          ["Tarix", "Alıcı", "VÖEN", "Mənbə", "Cəlb olunan", "ƏDV 18%"],
+                          [[fmt_date(x[0]), self.R.parties[x[1]].name if x[1] in self.R.parties else x[1], x[1],
+                            x[4], x[2], x[2] * VAT_RATE] for x in items], {4, 5},
+                          [("Cəlb olunan", s), ("Hesablanmış ƏDV", s * VAT_RATE)])
         if key == "recv":
             items = [r for r in self.recv if f(r.op.date)]
             s = sum(r.op.amount for r in items)
@@ -533,6 +548,10 @@ class Debts:
             return exp, diff, "⚠ ƏDV borcu 18%-dən çoxdur — ƏDV az ödənilib"
         return exp, diff, "⚠ ƏDV borcu 18%-dən azdır — ƏDV artıq ödənilib"
 
+    def _hes(self, v, a, b):
+        """Hesablanmış ƏDV: cəlb olunan baza (bank və ya ƏDV÷18%) × 18%."""
+        return round(sum(x[2] for x in self.R.taxable if x[1] == v and a <= x[0] <= b) * VAT_RATE, 2)
+
     def _title(self):
         return (("Debitor borclar — alıcılar (bizə borcludurlar)" if self.side == "satis"
                  else "Kreditor borclar — təchizatçılar (biz borcluyuq)"))
@@ -583,7 +602,7 @@ class Debts:
         for v in self._voens():
             ev = [e for e in self._events(v) if e[0] <= self.b]
             s = self._sums(ev, self.a, self.b)
-            s["hes"] = s["np"] * VAT_RATE
+            s["hes"] = self._hes(v, self.a, self.b)
             s["exp"], s["diff"], note = self.check(s["n1"], s["v1"])
             if all(abs(s[k]) < 0.005 for k in keys):
                 continue
@@ -651,12 +670,14 @@ class Debts:
                        t(label, st)]
                 if k == "h":
                     row.append(Cell(None, st))
-                    for x in ms:
-                        row += [Cell(None, st), n(x["np"] * VAT_RATE, st, ("party", v)), Cell(None, st)]
-                    row += [Cell(None, st), n(S["np"] * VAT_RATE, st, ("party", v)), Cell(None, st)]
-                    tot[("h", None)] += S["np"] * VAT_RATE
-                    for mi, x in enumerate(ms):
-                        tot[("h", mi)] += x["np"] * VAT_RATE
+                    hm = [self._hes(v, a_, b_) for a_, b_ in bounds]
+                    for h_ in hm:
+                        row += [Cell(None, st), n(h_, st, ("party", v)), Cell(None, st)]
+                    hs = self._hes(v, self.a, self.b)
+                    row += [Cell(None, st), n(hs, st, ("party", v)), Cell(None, st)]
+                    tot[("h", None)] += hs
+                    for mi, h_ in enumerate(hm):
+                        tot[("h", mi)] += h_
                 else:
                     row.append(n(S[k + "0"], st, ("party", v)))
                     for mi, x in enumerate(ms):
