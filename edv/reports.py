@@ -413,6 +413,13 @@ class BankReport:
         accs = sorted({r.op.account for r in self.R.bank if r.op.account})
         g.top_lines = [("Hesab(lar):", ", ".join(accs) or "—"),
                        ("Əməliyyat sayı:", str(len(self.rows)))]
+        if not self.rows:
+            last = max((r.op.date for r in self.R.bank), default=None)
+            msg = (f"Bu dövrdə bank hesabında heç bir əməliyyat yoxdur. Bazadakı son bank əməliyyatı: "
+                   f"{fmt_date(last)}. Çıxarış bu dövrü əhatə edirsə — hesabda hərəkət olmayıb; "
+                   f"etmirsə — yeni çıxarışı «Məlumat bazası»na əlavə edin." if last else
+                   "Bazada bank çıxarışı yoxdur — «Məlumat bazası»na əlavə edin.")
+            g.top_lines.append(("⚠", msg))
         g.footnote = ("Kateqoriyalar avtomatik təyin olunur: alıcı/təchizatçı — qaimələrdəki VÖEN-ə görə, "
                       "vergi və sosial ödənişlər — büdcə VÖEN-lərinə görə, digərləri — təyinata görə.")
         return g

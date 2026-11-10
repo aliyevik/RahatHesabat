@@ -413,7 +413,8 @@ class BasePage(QWidget):
         self.stats = QLabel("")
         self.stats.setStyleSheet(f"font-weight:600; color:{theme.NAVY};")
         l2.addWidget(self.stats)
-        cov_title = QLabel("Aylar üzrə məlumat (sətir sayı) — boş xana o ay üçün fayl yüklənməyib deməkdir:")
+        cov_title = QLabel("Aylar üzrə məlumat (sətir sayı): yaşıl — məlumat var; boz «0» — fayl bu ayı əhatə edir, "
+                           "amma əməliyyat olmayıb; qırmızı «—» — bu ay üçün fayl yüklənməyib.")
         cov_title.setObjectName("muted")
         l2.addWidget(cov_title)
         self.cov = QTableWidget(4, 0)
@@ -587,12 +588,25 @@ class BasePage(QWidget):
             months = months_between(dt.date(*months[0], 1), dt.date(*months[-1], 1))
         self.cov.setColumnCount(len(months))
         self.cov.setHorizontalHeaderLabels([mlabel(m).replace(" ", "\n") for m in months])
+        # yüklənmiş çıxarışların əhatə etdiyi aylar (əməliyyat olmasa da)
+        covered = {k: set() for k in Store.KINDS}
+        for imp in st.data.get("imports", []):
+            if imp.get("period"):
+                a = dt.date.fromisoformat(imp["period"][0])
+                b = min(dt.date.fromisoformat(imp["period"][1]), dt.date.today())
+                covered[imp["kind"]].update(months_between(a, b))
         for ci, m in enumerate(months):
             for ri, k in enumerate(Store.KINDS):
                 nval = cov.get(m, {}).get(k, 0)
-                it = QTableWidgetItem(str(nval) if nval else "—")
+                if nval:
+                    it, bg, tip = QTableWidgetItem(str(nval)), "#E5F4EA", f"{nval} sətir"
+                elif m in covered[k]:
+                    it, bg, tip = QTableWidgetItem("0"), "#EEF1F5", "Fayl bu ayı əhatə edir, amma əməliyyat olmayıb"
+                else:
+                    it, bg, tip = QTableWidgetItem("—"), "#FBEAEA", "Bu ay üçün fayl yüklənməyib"
                 it.setTextAlignment(Qt.AlignCenter)
-                it.setBackground(QBrush(QColor("#E5F4EA" if nval else "#FBEAEA")))
+                it.setBackground(QBrush(QColor(bg)))
+                it.setToolTip(tip)
                 self.cov.setItem(ri, ci, it)
         self.cov.resizeColumnsToContents()
         imps = list(reversed(st.data.get("imports", [])))
