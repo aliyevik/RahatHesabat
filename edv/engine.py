@@ -166,6 +166,10 @@ class Result:
     adv_used: dict = field(default_factory=dict)   # id(avans) -> istifadə olunan məbləğ
     adv_uses: dict = field(default_factory=dict)   # id(avans) -> [(MT qaimə, məbləğ)]
     mt_adv: dict = field(default_factory=dict)     # id(MT) -> [(avans, məbləğ)]
+    # Satış: ƏDV-yə cəlb olunan baza (tarix, VÖEN, artım, mənbə) — pul nə vaxt gəlibsə o aya;
+    # ƏDV depozitə gələn ƏDV bankdakı puldan çoxdursa, baza ƏDV / 18% götürülür
+    taxable: list = field(default_factory=list)
+    taxable0: list = field(default_factory=list)   # 0% / azad qaimələrə daxilolmalar
 
     # ---- köməkçi süzgəclər
     def in_period(self, d, a, b):
@@ -279,7 +283,8 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
             else:
                 cat = IN_UNKNOWN
         else:
-            if "xidmət haqqı" in t or "xidmet haqqi" in t or "komissiya" in t:
+            tn = t.replace("ı", "i").replace("ə", "e")
+            if "xidmet haqqi" in tn or "komissiya" in tn:
                 cat = OUT_FEE
             elif v in BUDGET_VOENS or "CTRE" in o.iban.upper():
                 cat = OUT_BUDGET
@@ -436,6 +441,29 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
     s1, sl1 = fifo(active_s, recv_bank, "net", lambda i: base[id(i)][0])
     s2, sl2 = fifo(active_s, recv_dep, "vat", lambda i: base[id(i)][1])
 
+    # ---- ƏDV-yə cəlb olunan baza (satış)
+    zero_part = defaultdict(float)
+    taxable0 = []
+    for a in s1:
+        if a.kind == "net" and a.invoice.edv < 0.005 and not a.invoice.is_opening:
+            zero_part[id(a.pay)] += a.amount
+            taxable0.append((a.pay.date, a.invoice.voen, a.amount, a.pay))
+    taxable = []
+    for v in cus_voens | set(recv_bank) | set(recv_dep):
+        evs = [(op.date, "bank", amt - zero_part.get(id(op), 0.0), op) for op, amt in recv_bank.get(v, [])]
+        evs += [(op.date, "vat", amt, op) for op, amt in recv_dep.get(v, [])]
+        cum_n = cum_v = cum_base = 0.0
+        for d, src, amt, op in sorted(evs, key=lambda e: (e[0], e[1])):
+            if src == "bank":
+                cum_n += amt
+            else:
+                cum_v += amt
+            nb = max(cum_n, cum_v / VAT_RATE)
+            inc = round(nb - cum_base, 2)
+            if abs(inc) > 0.004:
+                taxable.append((d, v, inc, op, "bank" if src == "bank" else "ƏDV/18%"))
+            cum_base = nb
+
     for pay, kind, rest in unalloc:
         issues.append(Issue("Alış: qaimədən artıq ödəniş (avans və ya əvvəlki dövrün borcu)", pay.date,
                             getattr(pay, "voen", "") or getattr(pay, "cp_voen", ""),
@@ -484,7 +512,7 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
                   s1 + s2, unalloc, sl1 + sl2, parties, issues, dep_open, rng,
                   (float(openings["bank"]) if openings.get("bank") is not None
                    else sum((f.opening or 0) for f in files if f.kind == "bank")), od,
-                  base, dict(adv_used), dict(adv_uses), dict(mt_adv))
+                  base, dict(adv_used), dict(adv_uses), dict(mt_adv), taxable, taxable0)
 
 
 def check_files(files: list[SourceFile]) -> list[str]:

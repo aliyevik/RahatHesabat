@@ -105,6 +105,7 @@ class Invoice:
     yekun: float
     advances: list = field(default_factory=list)   # [(seria, nomre, məbləğ)]
     source: str = ""
+    yol: float = 0.0        # Yol vergisi
 
     @property
     def number(self) -> str:
@@ -261,7 +262,7 @@ def _load_invoices(path, kind) -> SourceFile:
                 edvsiz=g(row, "Malın ƏDV-siz ümumi dəyəri", num), edv=round(g(row, "Malın ƏDV məbləği", num), 2),
                 celb=g(row, "ƏDV-yə cəlb edilən", num), celb_olmayan=g(row, "ƏDV-yə cəlb edilməyən", num),
                 azad=g(row, "ƏDV-dən azad olan", num), sifir=g(row, 'ƏDV-yə "0" dərəcə ilə cəlb edilən', num),
-                yekun=round(g(row, "Yekun məbləğ", num), 2), source=path)
+                yekun=round(g(row, "Yekun məbləğ", num), 2), source=path, yol=g(row, "Yol vergisi", num))
             items.append(inv)
         # Avans qaiməsinə istinad (bəzən növbəti sətirlərdə davam edir)
         if items and g(row, "Avans Nömrəsi"):
