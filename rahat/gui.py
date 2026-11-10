@@ -368,6 +368,13 @@ class ReportTable(QTableWidget):
                     it.setForeground(QBrush(QColor(fg)))
                 elif isinstance(v, (int, float)) and v < -0.004:
                     it.setForeground(QBrush(QColor("#B3261E")))
+                elif isinstance(v, str) and "⚠" in v:
+                    it.setForeground(QBrush(QColor("#C62828")))
+                    f = it.font()
+                    f.setBold(True)
+                    it.setFont(f)
+                elif isinstance(v, str) and "✓" in v:
+                    it.setForeground(QBrush(QColor("#1E7B3C")))
                 if isinstance(v, str) and len(v) > 40:
                     it.setToolTip(v)
                 if cell.ref is not None and isinstance(v, (int, float)) and abs(v) >= 0.005:

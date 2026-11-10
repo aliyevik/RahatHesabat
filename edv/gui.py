@@ -861,7 +861,9 @@ class GridPage(QWidget):
                 else:
                     it = QTableWidgetItem("" if v is None else str(v))
                     if "⚠" in str(v):
-                        it.setForeground(QBrush(QColor("#B3261E")))
+                        it.setForeground(QBrush(QColor("#C62828")))
+                    elif "✓" in str(v):
+                        it.setForeground(QBrush(QColor("#1E7B3C")))
                 t.setItem(ri, ci, it)
         t.resizeColumnsToContents()
         for ci, h in enumerate(d.headers):

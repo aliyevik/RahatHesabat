@@ -38,6 +38,24 @@ BANK_OUT_ORDER = [OUT_SUPPLIER, OUT_NOINV, OUT_BUDGET, OUT_SALARY, OUT_FEE, OUT_
                   OUT_CUSTOMER, OUT_UNKNOWN]
 
 
+# ----------------------------------------------------------------- hüquqi formanın qısaldılması
+_E, _I, _C, _S, _U = "[ƏəEeAa]", "[IıİiI]", "[CcÇç]", "[SsŞş]", "[UuÜü]"
+_SHORT = [
+    (re.compile(rf"M{_E}HD{_U}[DdTt]\s+M{_E}{_S}{_U}L{_I}YY{_E}TL{_I}\s+{_C}{_E}M\w*", re.I), "MMC"),
+    (re.compile(rf"A{_C}{_I}Q\s+{_S}{_E}HMDAR\s+{_C}{_E}M\w*", re.I), "ASC"),
+    (re.compile(rf"QAPAL{_I}\s+{_S}{_E}HMDAR\s+{_C}{_E}M\w*", re.I), "QSC"),
+    (re.compile(rf"{_S}{_E}HMDAR\s+{_C}{_E}M\w*", re.I), "SC"),
+]
+
+
+def short_name(s: str) -> str:
+    """«Məhdud Məsuliyyətli Cəmiyyəti» → MMC, «Açıq Səhmdar Cəmiyyəti» → ASC, «Qapalı ...» → QSC."""
+    s = (s or "").replace("″", '"')
+    for rx, rep in _SHORT:
+        s = rx.sub(rep, s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
 # ----------------------------------------------------------------- ad yoxlaması
 _TR = str.maketrans("ƏəİıIŞşÇçĞğÖöÜü″“”«»", "EeIiISsCcGgOoUu\"\"\"\"\"")
 _LEGAL = [
@@ -216,6 +234,9 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
         (sales if inv.side == "satis" else purchases).append(inv)
     deposit = list({(o.doc, o.date, o.medaxil, o.mexaric, o.voen): o for o in deposit}.values())
 
+    for x in purchases + sales + deposit:
+        x.name = short_name(x.name)
+    company_name = short_name(company_name)
     issues: list[Issue] = []
     if early:
         issues.append(Issue("Baza: başlanğıc tarixindən əvvəlki sətirlər nəzərə alınmadı", od, "", "", 0.0,
@@ -274,7 +295,7 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
                 cat = OUT_NOINV
             else:
                 cat = OUT_UNKNOWN
-        row = BankRow(o, cat, official or o.cp_name, bool(v), name_ok)
+        row = BankRow(o, cat, official or short_name(o.cp_name), bool(v), name_ok)
         if cat == OUT_BUDGET:
             row.name = BUDGET_VOENS.get(v, o.cp_name)
         bank_rows.append(row)
