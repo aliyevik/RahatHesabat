@@ -142,6 +142,10 @@ class Result:
     issues: list
     deposit_opening: float
     data_range: tuple
+    base: dict = field(default_factory=dict)       # id(qaimə) -> (ƏDV-siz, ƏDV) — hesaba alınan
+    adv_used: dict = field(default_factory=dict)   # id(avans) -> istifadə olunan məbləğ
+    adv_uses: dict = field(default_factory=dict)   # id(avans) -> [(MT qaimə, məbləğ)]
+    mt_adv: dict = field(default_factory=dict)     # id(MT) -> [(avans, məbləğ)]
 
     # ---- köməkçi süzgəclər
     def in_period(self, d, a, b):
@@ -281,8 +285,51 @@ def compute(files: list[SourceFile]) -> Result:
                     leftovers.append((pay, kind, rest))
         return allocs, leftovers
 
-    active_p = [i for i in purchases if i.status_group != "passiv"]
-    active_s = [i for i in sales if i.status_group != "passiv"]
+    # ---- avans qaimələri: MT qaimələri avansları FIFO ilə (avansın tarixinə görə) bağlayır
+    adv_used, adv_uses, mt_adv, base = defaultdict(float), defaultdict(list), defaultdict(list), {}
+    for invs, side in ((purchases, "Alış"), (sales, "Satış")):
+        adv = {(i.seria, i.nomre): i for i in invs if i.is_advance}
+        for mt in sorted([i for i in invs if not i.is_advance and i.status_group != "passiv" and i.advances],
+                         key=lambda i: (i.date, i.nomre)):
+            need = mt.yekun
+            refs = []
+            for ser, nom, amt in mt.advances:
+                a = adv.get((ser, nom))
+                if a is None:
+                    issues.append(Issue(f"{side}: istinad edilən avans qaiməsi faylda yoxdur", mt.date, mt.voen,
+                                        mt.name, amt, f"{mt.number} qaiməsi {ser}{nom} avansına istinad edir "
+                                        f"({amt:,.2f}), amma bu avans qaiməsi yüklənən faylda yoxdur.", mt))
+                elif a not in refs:
+                    refs.append(a)
+            for a in sorted(refs, key=lambda x: (x.date, x.nomre)):
+                take = round(min(a.yekun - adv_used[id(a)], need), 2)
+                if take > 0.004:
+                    adv_used[id(a)] += take
+                    adv_uses[id(a)].append((mt, take))
+                    mt_adv[id(mt)].append((a, take))
+                    need = round(need - take, 2)
+        for i in invs:
+            if i.is_advance:
+                rem = round(i.yekun - adv_used[id(i)], 2)
+                if i.status_group == "passiv":
+                    if rem > 0.01:
+                        issues.append(Issue(f"{side}: avans qaiməsi passivdir, amma qalığı var", i.date, i.voen,
+                                            i.name, rem, f"{i.number}: {i.yekun:,.2f} avansdan {adv_used[id(i)]:,.2f} "
+                                            f"MT qaimələri ilə bağlanıb, {rem:,.2f} bağlanmayıb, amma qaimə passivdir. "
+                                            f"Hesaba alınmadı — yoxlayın.", i))
+                    continue
+                if rem <= 0.004:
+                    issues.append(Issue(f"{side}: avans tam istifadə olunub, amma qaimə hələ aktivdir", i.date,
+                                        i.voen, i.name, i.yekun, f"{i.number} — MT qaimələri ilə tam bağlanıb, "
+                                        f"passiv edilməsi gözlənilir.", i))
+                    continue
+                ratio = i.edv / i.yekun if i.yekun else 0.0
+                base[id(i)] = (round(rem * (1 - ratio), 2), round(rem * ratio, 2))
+            elif i.status_group != "passiv":
+                base[id(i)] = (i.net, i.edv)
+
+    active_p = [i for i in purchases if id(i) in base]
+    active_s = [i for i in sales if id(i) in base]
 
     bank_to_sup = defaultdict(list)
     for r in bank_rows:
@@ -304,8 +351,8 @@ def compute(files: list[SourceFile]) -> Result:
     for o in deposit:
         if o.mexaric and not o.is_budget and o.executed and o.voen in sup_voens:
             dep_to_sup[o.voen].append((o, o.mexaric))
-    a1, l1 = fifo(active_p, bank_to_sup, "net", lambda i: i.net)
-    a2, l2 = fifo(active_p, dep_to_sup, "vat", lambda i: i.edv)
+    a1, l1 = fifo(active_p, bank_to_sup, "net", lambda i: base[id(i)][0])
+    a2, l2 = fifo(active_p, dep_to_sup, "vat", lambda i: base[id(i)][1])
     allocs = a1 + a2
     unalloc = l1 + l2
 
@@ -317,8 +364,8 @@ def compute(files: list[SourceFile]) -> Result:
     for o in deposit:
         if o.medaxil and o.executed and o.voen in cus_voens:
             recv_dep[o.voen].append((o, o.medaxil))
-    s1, sl1 = fifo(active_s, recv_bank, "net", lambda i: i.net)
-    s2, sl2 = fifo(active_s, recv_dep, "vat", lambda i: i.edv)
+    s1, sl1 = fifo(active_s, recv_bank, "net", lambda i: base[id(i)][0])
+    s2, sl2 = fifo(active_s, recv_dep, "vat", lambda i: base[id(i)][1])
 
     for pay, kind, rest in unalloc:
         issues.append(Issue("Alış: qaimədən artıq ödəniş (avans və ya əvvəlki dövrün borcu)", pay.date,
@@ -340,7 +387,7 @@ def compute(files: list[SourceFile]) -> Result:
         if inv.status_group == "gozleyen":
             issues.append(Issue(f"{side}: təsdiq gözləyən qaimə", inv.date, inv.voen, inv.name, inv.yekun,
                                 f"{inv.number} · {inv.status} — təsdiqlənənə qədər əvəzləşməyə daxil edilmir.", inv))
-        elif inv.status_group == "passiv":
+        elif inv.status_group == "passiv" and not inv.is_advance:
             issues.append(Issue(f"{side}: passiv / ləğv edilmiş qaimə", inv.date, inv.voen, inv.name, inv.yekun,
                                 f"{inv.number} · {inv.status} · {inv.novu[:60]} — hesablamaya daxil edilmir.", inv))
 
@@ -357,7 +404,8 @@ def compute(files: list[SourceFile]) -> Result:
     rng = (min(ds), max(ds)) if ds else (dt.date.today(), dt.date.today())
     dep_open = next((f.opening for f in files if f.kind == "depozit" and f.opening is not None), 0.0)
     return Result(company_voen, company_name, files, purchases, sales, deposit, bank_rows, allocs,
-                  s1 + s2, unalloc, sl1 + sl2, parties, issues, dep_open, rng)
+                  s1 + s2, unalloc, sl1 + sl2, parties, issues, dep_open, rng,
+                  base, dict(adv_used), dict(adv_uses), dict(mt_adv))
 
 
 def check_files(files: list[SourceFile]) -> list[str]:

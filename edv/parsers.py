@@ -126,7 +126,15 @@ class Invoice:
 
     @property
     def is_advance(self) -> bool:
-        return "avans" in self.novu.lower()
+        return self.seria.upper().startswith("AA") or "avans" in self.novu.lower()
+
+    @property
+    def kind_label(self) -> str:
+        if self.is_advance:
+            return "AA · avans"
+        if self.seria.upper().startswith("MT"):
+            return "MT · təqdimat"
+        return (self.seria[:2] or "?") + " · " + (self.novu[:20] or "digər")
 
 
 @dataclass

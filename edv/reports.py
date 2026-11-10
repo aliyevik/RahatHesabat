@@ -5,7 +5,7 @@ import datetime as dt
 from collections import defaultdict
 
 from rahat.layout import CASH, HEAD, ITEM, NOTE, RESULT, SECTION, SUB, TOTAL, Cell, Grid
-from rahat.model import AY_ADLARI, fmt_date
+from rahat.model import AY_ADLARI, fmt_date, fmt_money
 
 from . import VAT_RATE
 from .engine import (BANK_IN_ORDER, BANK_OUT_ORDER, IN_SALES, OUT_SUPPLIER, Result)
@@ -99,10 +99,10 @@ class Summary:
         inp = lambda d: d is not None and a <= d <= b
         self.inp = inp
 
-        self.sales_inv = [i for i in R.sales if i.status_group != "passiv" and inp(i.date)]
+        self.sales_inv = [i for i in R.sales if i.status_group != "passiv" and not i.is_advance and inp(i.date)]
         self.recv = [r for r in R.bank if r.category == IN_SALES and inp(r.op.date)]
         self.dep_in = [o for o in R.deposit if o.medaxil and o.executed and inp(o.date)]
-        self.pur_inv = [i for i in R.purchases if i.status_group == "tesdiq" and inp(i.date)]
+        self.pur_inv = [i for i in R.purchases if i.status_group == "tesdiq" and not i.is_advance and inp(i.date)]
         self.alloc = [x for x in R.allocs if inp(x.date) and x.invoice.status_group == "tesdiq"]
         self.alloc_pending = [x for x in R.allocs if inp(x.date) and x.invoice.status_group == "gozleyen"]
         self.dep_budget = [o for o in R.deposit if o.mexaric and o.is_budget and o.executed and inp(o.date)]
@@ -118,9 +118,9 @@ class Summary:
         hes = lambda m=None: round(recv(m) * VAT_RATE, 2)
         return [
             ("Satış — hesablanmış ƏDV", None, None),
-            ("Təqdim edilmiş satış qaimələri (ƏDV-siz)", "sales_inv",
+            ("Satış MT qaimələri (ƏDV-siz)", "sales_inv",
              lambda m=None: self.by_m(self.sales_inv, lambda i: i.date, lambda i: i.edvsiz, m)),
-            ("Satış qaimələri üzrə ƏDV", "sales_inv",
+            ("Satış MT qaimələri üzrə ƏDV", "sales_inv",
              lambda m=None: self.by_m(self.sales_inv, lambda i: i.date, lambda i: i.edv, m)),
             ("Alıcılardan bank hesabına daxil olan məbləğ", "recv", recv),
             ("Hesablanmış ƏDV (daxil olan × 18%)", "recv", hes),
@@ -129,9 +129,9 @@ class Summary:
             ("Fərq: hesablanmış − depozitə daxil olan", None,
              lambda m=None: round(hes(m) - self.by_m(self.dep_in, lambda o: o.date, lambda o: o.medaxil, m), 2)),
             ("Alış — əvəzləşdirilən ƏDV", None, None),
-            ("Alış qaimələri, təsdiqlənmiş (ƏDV-siz)", "pur_inv",
+            ("Alış MT qaimələri, təsdiqlənmiş (ƏDV-siz)", "pur_inv",
              lambda m=None: self.by_m(self.pur_inv, lambda i: i.date, lambda i: i.edvsiz, m)),
-            ("Alış qaimələri üzrə ƏDV", "pur_inv",
+            ("Alış MT qaimələri üzrə ƏDV", "pur_inv",
              lambda m=None: self.by_m(self.pur_inv, lambda i: i.date, lambda i: i.edv, m)),
             ("308 · Ödənilmiş məbləğ, ƏDV-siz (bankdan, FIFO)", "alloc_net",
              lambda m=None: self.by_m([x for x in self.alloc if x.kind == "net"], lambda x: x.date,
@@ -232,7 +232,7 @@ class Offset:
         for x in R.allocs:
             by_inv[id(x.invoice)].append(x)
         self.by_inv = by_inv
-        self.invoices = [i for i in R.purchases if i.status_group != "passiv" and
+        self.invoices = [i for i in R.purchases if i.date <= b and
                          (inp(i.date) or any(inp(x.date) for x in by_inv[id(i)]))]
         self.invoices.sort(key=lambda i: (i.name.lower(), i.date, i.nomre))
 
@@ -248,7 +248,8 @@ class Offset:
         return round(s, 2)
 
     def grid(self, signature) -> Grid:
-        heads = ["Kontragent / Qaimə", "Tarix", "VÖEN", "Yoxlama", "Status", "Yekun", "ƏDV-siz", "ƏDV",
+        heads = ["Kontragent / Qaimə", "Tarix", "Növ", "Yoxlama", "Status", "Qaimə yekunu",
+                 "Hesaba alınan ƏDV-siz", "Hesaba alınan ƏDV",
                  "Əvvəl ödənilib", "Dövrdə bankdan (ƏDV-siz)", "Dövrdə depozitdən (ƏDV)",
                  "Dövrdə ödənilmiş cəmi", "Qalıq borc", "Əvəzləşmə"]
         nc = len(heads)
@@ -264,12 +265,22 @@ class Offset:
         for v, invs in sorted(by_party.items(), key=lambda kv: kv[1][0].name.lower()):
             p = self.R.parties.get(v)
             chk = "VÖEN ✓ · Ad ✓" if (p is None or p.name_ok) else "VÖEN ✓ · Ad fərqli ⚠"
-            g.rows.append([t(invs[0].name, SECTION, colspan=2), None, t(v, SECTION), t(chk, SECTION)] +
+            g.rows.append([t(invs[0].name, SECTION, colspan=2), None, t("VÖEN " + v, SECTION), t(chk, SECTION)] +
                           [Cell(None, SECTION) for _ in range(nc - 4)])
             for i in invs:
+                b = self.R.base.get(id(i))
+                if b is None:
+                    used = self.R.adv_used.get(id(i), 0.0)
+                    why = ("passiv — MT ilə bağlanıb" if i.is_advance and used >= i.yekun - 0.01 else
+                           "passiv — hesaba alınmır")
+                    g.rows.append([t("   " + i.number, "alt"), t(fmt_date(i.date), "alt", "center"),
+                                   t(i.kind_label, "alt", "center"), t("", "alt"), t(i.status, "alt"),
+                                   n(i.yekun, "alt")] + [Cell(None, "alt") for _ in range(7)] +
+                                  [t(why, "alt", "center")])
+                    continue
                 before = self.paid(i, "net", "before") + self.paid(i, "vat", "before")
                 pn, pv = self.paid(i, "net", "in"), self.paid(i, "vat", "in")
-                rest = round(i.yekun - before - pn - pv, 2)
+                rest = round(sum(b) - before - pn - pv, 2)
                 if i.status_group == "gozleyen":
                     st = "Gözləyir (təsdiq)"
                 elif pv > 0.004:
@@ -278,22 +289,23 @@ class Offset:
                     st = "Ödənib"
                 else:
                     st = "Ödənilməyib" if before + pn + pv < 0.01 else "Qismən"
-                vals = [i.yekun, i.net, i.edv, before, pn, pv, pn + pv, rest]
+                vals = [i.yekun, b[0], b[1], before, pn, pv, pn + pv, rest]
                 for k, x in enumerate(vals):
                     tot[k] += x
                 if i.status_group == "tesdiq":
                     self.offset_vat += pv
                     self.offset_net += pn
                 ref = ("inv", id(i))
-                g.rows.append([t("   " + i.number, ITEM), t(fmt_date(i.date), ITEM, "center"), t("", ITEM),
-                               t("", ITEM), t(i.status.replace("Sistem tərəfindən təsdiqləndi", "Təsdiqləndi (sistem)"))] +
+                g.rows.append([t("   " + i.number, ITEM), t(fmt_date(i.date), ITEM, "center"),
+                               t(i.kind_label, ITEM, "center"), t("", ITEM), t(i.status.replace("Sistem tərəfindən təsdiqləndi", "Təsdiqləndi (sistem)"))] +
                               [n(x, ref=ref) for x in vals] + [t(st, ITEM, "center")])
         g.rows.append([t("CƏMİ", TOTAL, colspan=5), None, None, None, None] + [n(x, TOTAL) for x in tot] +
                       [t("", TOTAL)])
         g.top_lines = [("Dövrdə əvəzləşdirilən ƏDV (təsdiqlənmiş qaimələr):", round(self.offset_vat, 2)),
                        ("Dövrdə ödənilmiş, ƏDV-siz (təsdiqlənmiş qaimələr):", round(self.offset_net, 2))]
-        g.footnote = ("Ödənişlər VÖEN üzrə FIFO ilə bağlanıb (qaimə nömrəsi əsas götürülməyib). "
-                      "Passiv/ləğv edilmiş qaimələr daxil edilməyib — «Yoxlanılmalı» bölməsinə baxın.")
+        g.footnote = ("Ödənişlər VÖEN üzrə FIFO ilə bağlanıb (qaimə nömrəsi əsas götürülməyib). MT — təqdimat qaiməsi, "
+                      "AA — avans qaiməsi (hesaba yalnız MT ilə bağlanmamış qalığı alınır). Passiv qaimələr boz "
+                      "sətirdə qeyd ilə göstərilir və cəmə daxil edilmir.")
         self._inv_by_id = {id(i): i for i in self.invoices}
         return g
 
@@ -464,90 +476,186 @@ class BankReport:
 
 
 # ================================================================= 5. Kontragentlər
-class Parties:
+class Debts:
+    """Kreditor (side='alis') və ya debitor (side='satis') borcları: ƏDV-siz və ƏDV ayrıca."""
+    side = "alis"
+
     def __init__(self, R: Result, a, b):
         self.R, self.a, self.b = R, a, b
 
-    def _flows(self, v):
-        """Kontragent üzrə hərəkətlər: [(tarix, növ, sənəd, alış qaimə, alışa ödəniş, satış qaimə, daxilolma)]"""
-        R = self.R
+    def _events(self, v):
+        """[(tarix, növ, sənəd, qaimə ƏDV-siz, qaimə ƏDV, ödəniş ƏDV-siz, ödəniş ƏDV, qeyd)]"""
+        R, sale = self.R, self.side == "satis"
         ev = []
-        for i in R.purchases:
-            if i.voen == v and i.status_group != "passiv":
-                ev.append((i.date, "Alış qaiməsi", f"{i.number} · {i.status}", i.yekun, 0, 0, 0))
-        for i in R.sales:
-            if i.voen == v and i.status_group != "passiv":
-                ev.append((i.date, "Satış qaiməsi", f"{i.number} · {i.status}", 0, 0, i.yekun, 0))
+        for i in (R.sales if sale else R.purchases):
+            if i.voen != v:
+                continue
+            b = R.base.get(id(i))
+            note = ""
+            if i.is_advance:
+                used = R.adv_used.get(id(i), 0.0)
+                note = (f"avans {i.yekun:,.2f}, MT ilə bağlanıb {used:,.2f}").replace(",", " ")
+            if b is None:
+                ev.append((i.date, f"{i.kind_label} · {i.status}", i.number, 0, 0, 0, 0,
+                           (note + " · " if note else "") + "passiv — hesaba alınmır"))
+            else:
+                ev.append((i.date, f"{i.kind_label} · {i.status}", i.number, b[0], b[1], 0, 0,
+                           (note + " · hesaba alınan: açıq qalıq") if note else ""))
         for r in R.bank:
             if r.op.cp_voen != v:
                 continue
-            if r.category in (OUT_SUPPLIER,):
-                ev.append((r.op.date, "Bankdan ödəniş", r.op.teyinat[:80], 0, -r.op.amount, 0, 0))
-            elif r.op.amount > 0 and r.category == IN_SALES:
-                ev.append((r.op.date, "Banka daxilolma", r.op.teyinat[:80], 0, 0, 0, r.op.amount))
-            elif r.op.amount > 0:
-                ev.append((r.op.date, "Geri qaytarma (banka)", r.op.teyinat[:80], 0, -r.op.amount, 0, 0))
+            if sale and r.category == IN_SALES:
+                ev.append((r.op.date, "Banka daxilolma", r.op.doc, 0, 0, r.op.amount, 0, r.op.teyinat[:90]))
+            elif not sale and r.category == OUT_SUPPLIER:
+                ev.append((r.op.date, "Bankdan ödəniş", r.op.doc, 0, 0, -r.op.amount, 0, r.op.teyinat[:90]))
+            elif not sale and r.op.amount > 0:
+                ev.append((r.op.date, "Geri qaytarma (banka)", r.op.doc, 0, 0, -r.op.amount, 0, r.op.teyinat[:90]))
         for o in R.deposit:
             if o.voen != v or not o.executed:
                 continue
-            if o.mexaric:
-                ev.append((o.date, "Depozitdən ƏDV ödənişi", o.teyinat[:80], 0, o.mexaric, 0, 0))
-            if o.medaxil:
-                ev.append((o.date, "Depozitə ƏDV daxilolması", o.teyinat[:80], 0, 0, 0, o.medaxil))
-        return sorted(ev, key=lambda e: e[0])
+            amt = o.medaxil if sale else o.mexaric
+            if amt and not o.is_budget:
+                ev.append((o.date, "ƏDV depozitə daxilolma" if sale else "ƏDV depozitdən ödəniş", o.doc,
+                           0, 0, 0, amt, o.teyinat[:90]))
+        return sorted(ev, key=lambda e: (e[0], e[1]))
+
+    def _open_adv(self, v):
+        R = self.R
+        s = 0.0
+        for i in (R.sales if self.side == "satis" else R.purchases):
+            if i.voen == v and i.is_advance and id(i) in R.base and i.date <= self.b:
+                s += sum(R.base[id(i)])
+        return s
 
     def grid(self, signature):
-        heads = ["Kontragent", "VÖEN", "Yoxlama", "Rol",
-                 "Kreditor: ilk qalıq", "Alış qaimələri", "Ödənilib", "Kreditor: son qalıq",
-                 "Debitor: ilk qalıq", "Satış qaimələri", "Daxil olub", "Debitor: son qalıq"]
-        nc = len(heads)
+        sale = self.side == "satis"
+        who = "Alıcı" if sale else "Təchizatçı"
+        nc = 3 + 8 + 2
         g = Grid(title=f"{self.R.company_name} · VÖEN {self.R.company_voen}",
-                 subtitle=f"{fmt_date(self.a)} – {fmt_date(self.b)} · Kontragentlər üzrə borclar",
-                 ncols=nc, col_widths=[3.4, 1.1, 1.3, 1.1] + [1.15] * 8, signature=signature)
-        g.head_rows = [[t(h, HEAD, "left" if i == 0 else "center") for i, h in enumerate(heads)]]
-        tot = [0.0] * 8
-        for v, p in sorted(self.R.parties.items(), key=lambda kv: kv[1].name.lower()):
-            ev = self._flows(v)
-            if not ev:
-                continue
+                 subtitle=f"{fmt_date(self.a)} – {fmt_date(self.b)} · " +
+                          ("Debitor borclar — alıcılar (bizə borcludurlar)" if sale
+                           else "Kreditor borclar — təchizatçılar (biz borcluyuq)"),
+                 ncols=nc, col_widths=[3.4, 1.1, 1.3] + [1.1] * 8 + [1.2, 1.15], signature=signature)
+        paid = "Daxil olub" if sale else "Ödənilib"
+        h1 = [t(who, HEAD, rowspan=2), t("VÖEN", HEAD, "center", rowspan=2), t("Yoxlama", HEAD, "center", rowspan=2),
+              t("Əsas məbləğ (ƏDV-siz) — bank", HEAD, "center", colspan=4), None, None, None,
+              t("ƏDV — depozit", HEAD, "center", colspan=4), None, None, None,
+              t("Cəmi son qalıq", HEAD, "center", rowspan=2), t("o cümlədən açıq avans qaiməsi", HEAD, "center", rowspan=2)]
+        h2 = [None, None, None]
+        for _ in range(2):
+            h2 += [t("İlk qalıq", SUB, "center"), t("Qaimə", SUB, "center"), t(paid, SUB, "center"),
+                   t("Son qalıq", SUB, "center")]
+        h2 += [None, None]
+        g.head_rows = [h1, h2]
+        tot = [0.0] * 10
+        voens = {i.voen for i in (self.R.sales if sale else self.R.purchases)}
+        for v in sorted(voens, key=lambda x: self.R.parties[x].name.lower() if x in self.R.parties else x):
+            ev = [e for e in self._events(v) if e[0] <= self.b]
             pre = [e for e in ev if e[0] < self.a]
-            inn = [e for e in ev if self.a <= e[0] <= self.b]
-            if not inn and not pre:
-                continue
-            k0 = sum(e[3] - e[4] for e in pre)
-            d0 = sum(e[5] - e[6] for e in pre)
-            ki, kp = sum(e[3] for e in inn), sum(e[4] for e in inn)
-            si, sp = sum(e[5] for e in inn), sum(e[6] for e in inn)
-            vals = [k0, ki, kp, k0 + ki - kp, d0, si, sp, d0 + si - sp]
+            inn = [e for e in ev if e[0] >= self.a]
+            n0 = sum(e[3] - e[5] for e in pre)
+            v0 = sum(e[4] - e[6] for e in pre)
+            ni, np_ = sum(e[3] for e in inn), sum(e[5] for e in inn)
+            vi, vp = sum(e[4] for e in inn), sum(e[6] for e in inn)
+            n1, v1 = n0 + ni - np_, v0 + vi - vp
+            adv = self._open_adv(v)
+            vals = [n0, ni, np_, n1, v0, vi, vp, v1, n1 + v1, adv]
             if all(abs(x) < 0.005 for x in vals):
                 continue
             for k, x in enumerate(vals):
                 tot[k] += x
-            role = " / ".join(x for x, f in (("Təchizatçı", p.is_supplier), ("Alıcı", p.is_customer)) if f) or "—"
-            chk = "VÖEN ✓ · Ad ✓" if p.name_ok else "VÖEN ✓ · Ad fərqli ⚠"
-            g.rows.append([t(p.name), t(v, ITEM, "center"), t(chk, ITEM, "center"), t(role, ITEM, "center")] +
-                          [n(x, ref=("party", v)) for x in vals])
-        g.rows.append([t("CƏMİ", TOTAL, colspan=4), None, None, None] + [n(x, TOTAL) for x in tot])
-        g.footnote = ("Kreditor — bizim təchizatçıya borcumuz (alış qaiməsi − bank və depozitdən ödəniş). "
-                      "Debitor — alıcının bizə borcu (satış qaiməsi − bank və depozitə daxilolma). "
-                      "Mənfi qalıq — avans. Passiv qaimələr daxil deyil. İlk qalıq yüklənən faylların "
-                      "başlanğıcından hesablanır.")
+            p = self.R.parties.get(v)
+            chk = "VÖEN ✓ · Ad ✓" if (p is None or p.name_ok) else "VÖEN ✓ · Ad fərqli ⚠"
+            style = ITEM
+            g.rows.append([t(p.name if p else v), t(v, ITEM, "center"), t(chk, ITEM, "center")] +
+                          [n(x, RESULT if k == 8 else style, ("party", v)) for k, x in enumerate(vals)])
+        g.rows.append([t("CƏMİ", TOTAL, colspan=3), None, None] + [n(x, TOTAL) for x in tot])
+        g.top_lines = [("Son qalıq — əsas məbləğ (ƏDV-siz):", round(tot[3], 2)),
+                       ("Son qalıq — ƏDV:", round(tot[7], 2)),
+                       ("Cəmi:", round(tot[8], 2))]
+        g.footnote = (("Müsbət qalıq — alıcı bizə borcludur; mənfi — alıcıdan avans almışıq. " if sale else
+                       "Müsbət qalıq — biz təchizatçıya borcluyuq; mənfi — təchizatçıya avans vermişik. ") +
+                      "Əsas məbləğ bankla, ƏDV depozitlə ödənilir. Hesaba MT qaimələri və avans (AA) qaimələrinin "
+                      "MT ilə bağlanmamış hissəsi alınır; passiv qaimələr alınmır (üzləşmə aktında qeyd ilə görünür).")
         return g
 
     def detail(self, ref):
         v = ref[1]
         p = self.R.parties.get(v)
-        ev = [e for e in self._flows(v) if e[0] <= self.b]
-        rows, bal_k, bal_d = [], 0.0, 0.0
-        for e in ev:
-            bal_k += e[3] - e[4]
-            bal_d += e[5] - e[6]
-            rows.append([fmt_date(e[0]), e[1], e[2], e[3], e[4], e[5], e[6], bal_k, bal_d])
+        rows, bn, bv = [], 0.0, 0.0
+        for e in self._events(v):
+            if e[0] > self.b:
+                continue
+            bn += e[3] - e[5]
+            bv += e[4] - e[6]
+            rows.append([fmt_date(e[0]), e[1], e[2], e[3], e[4], e[5], e[6], bn, bv, e[7]])
+        paid = "Daxil olub" if self.side == "satis" else "Ödənilib"
         return Detail(f"{p.name if p else v} · VÖEN {v}",
-                      "Üzləşmə aktı: bütün qaimələr və ödənişlər tarix üzrə (qalıqlar artan yekunla)",
-                      ["Tarix", "Növ", "Sənəd / təyinat", "Alış qaiməsi", "Ödənilib", "Satış qaiməsi",
-                       "Daxil olub", "Kreditor qalığı", "Debitor qalığı"], rows, {3, 4, 5, 6, 7, 8},
-                      [("Kreditor qalığı", bal_k), ("Debitor qalığı", bal_d)])
+                      "Üzləşmə aktı — əsas məbləğ (ƏDV-siz) və ƏDV ayrıca; passiv qaimələr qeyd ilə göstərilir",
+                      ["Tarix", "Növ", "Sənəd", "Qaimə ƏDV-siz", "Qaimə ƏDV", f"{paid} ƏDV-siz", f"{paid} ƏDV",
+                       "Qalıq ƏDV-siz", "Qalıq ƏDV", "Qeyd / təyinat"], rows, {3, 4, 5, 6, 7, 8},
+                      [("Qalıq — əsas məbləğ", bn), ("Qalıq — ƏDV", bv), ("Cəmi qalıq", bn + bv)])
+
+
+class Creditors(Debts):
+    side = "alis"
+
+
+class Debtors(Debts):
+    side = "satis"
+
+
+# ================================================================= Avans qaimələri
+class Advances:
+    def __init__(self, R: Result, a, b):
+        self.R, self.a, self.b = R, a, b
+
+    def grid(self, signature):
+        heads = ["Avans qaiməsi", "Tarix", "Kontragent", "VÖEN", "Status", "Avans (yekun)", "ƏDV",
+                 "MT ilə bağlanıb", "Bağlanmamış qalıq", "Vəziyyət"]
+        nc = len(heads)
+        g = Grid(title=f"{self.R.company_name} · VÖEN {self.R.company_voen}",
+                 subtitle=f"{fmt_date(self.a)} – {fmt_date(self.b)} · Avans (AA) qaimələri və onları bağlayan MT qaimələri",
+                 ncols=nc, col_widths=[1.5, 1.0, 3.2, 1.1, 1.5, 1.15, 1.0, 1.15, 1.15, 3.0], signature=signature)
+        g.head_rows = [[t(h, HEAD, "left" if i in (0, 2, 9) else "center") for i, h in enumerate(heads)]]
+        tot = [0.0] * 4
+        for side, invs in (("Alış — təchizatçılara verilən avanslar", self.R.purchases),
+                           ("Satış — alıcılardan alınan avanslar", self.R.sales)):
+            advs = [i for i in invs if i.is_advance and i.date <= self.b]
+            g.rows.append([Cell(f"{side}  ({len(advs)})", SECTION, align="left", colspan=nc)] + [None] * (nc - 1))
+            for i in sorted(advs, key=lambda x: (x.name.lower(), x.date)):
+                used = round(self.R.adv_used.get(id(i), 0.0), 2)
+                rem = round(i.yekun - used, 2)
+                passive = i.status_group == "passiv"
+                if rem <= 0.004:
+                    st = "✓ Tam bağlanıb" + (" (passiv)" if passive else " — passiv edilməlidir ⚠")
+                elif used <= 0.004:
+                    st = "Açıq — hələ MT ilə bağlanmayıb" + (" ⚠ amma passivdir" if passive else "")
+                else:
+                    st = f"Qismən bağlanıb — qalıq {fmt_money(rem)}" + (" ⚠ amma passivdir" if passive else "")
+                vals = [i.yekun, i.edv, used, rem]
+                for k, x in enumerate(vals):
+                    tot[k] += x
+                ref = ("adv", id(i))
+                g.rows.append([t(i.number), t(fmt_date(i.date), ITEM, "center"), t(i.name), t(i.voen, ITEM, "center"),
+                               t(i.status, ITEM, "center")] + [n(x, ref=ref) for x in vals] +
+                              [t(st, RESULT if "⚠" in st or "Qismən" in st else ITEM)])
+        g.rows.append([t("CƏMİ", TOTAL, colspan=5), None, None, None, None] + [n(x, TOTAL) for x in tot] + [t("", TOTAL)])
+        g.footnote = ("MT qaiməsi istinad etdiyi avansları köhnədən yeniyə (FIFO) bağlayır. Qismən bağlanmış avansın "
+                      "qalığı açıq qalır və borc/əvəzləşmə hesabına daxil edilir.")
+        self._by = {id(i): i for i in self.R.purchases + self.R.sales}
+        return g
+
+    def detail(self, ref):
+        i = self._by.get(ref[1])
+        if not i:
+            return None
+        uses = self.R.adv_uses.get(id(i), [])
+        rows = [[fmt_date(mt.date), mt.number, mt.status, mt.yekun, amt] for mt, amt in uses]
+        used = sum(a for _, a in uses)
+        return Detail(f"{i.number} · {i.name}", f"Avans qaiməsi · {fmt_date(i.date)} · {i.status}",
+                      ["MT tarixi", "MT qaiməsi", "Status", "MT yekunu", "Avansdan bağlanan"], rows, {3, 4},
+                      [("Avans", i.yekun), ("MT ilə bağlanıb", used), ("Qalıq", i.yekun - used)])
 
 
 # ================================================================= 6. Yoxlanılmalı

@@ -27,7 +27,7 @@ from rahat.model import fmt_date, fmt_money
 from . import APP_NAME, APP_VERSION, PRESENTED_BY, PRESENTED_URL
 from .engine import check_files, compute
 from .parsers import ParseError, load
-from .reports import (BankReport, IssuesReport, Offset, Parties, SalesReport, Summary, mlabel,
+from .reports import (Advances, BankReport, Creditors, Debtors, IssuesReport, Offset, SalesReport, Summary, mlabel,
                       months_between)
 
 KIND_NAMES = {
@@ -645,7 +645,9 @@ class Main(QMainWindow):
                                [("e-taxes «Əlavə 1» faylı", export_appendix)])),
         ("💰   Satış və hesablanmış ƏDV", (SalesReport, "Satış və hesablanmış ƏDV", "Satış", None)),
         ("🏦   Bank hesabatı", (BankReport, "Bank hesabatı", "Bank", None)),
-        ("👥   Kontragentlər və borclar", (Parties, "Kontragentlər və borclar", "Kontragentlər", None)),
+        ("📕   Kreditor borclar (təchizatçılar)", (Creditors, "Kreditor borclar", "Kreditor", None)),
+        ("📗   Debitor borclar (alıcılar)", (Debtors, "Debitor borclar", "Debitor", None)),
+        ("🅰   Avans qaimələri", (Advances, "Avans qaimələri", "Avanslar", None)),
         ("⚠   Yoxlanılmalı", (IssuesReport, "Yoxlanılmalı məqamlar", "Yoxlanılmalı", None)),
     ]
 
