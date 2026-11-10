@@ -155,6 +155,10 @@ class Result:
 
 
 # ----------------------------------------------------------------- əsas hesablama
+def fmt(d):
+    return d.strftime("%d.%m.%Y")
+
+
 def opening_date(files: list[SourceFile]) -> dt.date:
     """İlkin qalıqların tarixi: yüklənən faylların ən erkən başlanğıcından bir gün əvvəl."""
     ds = [f.period[0] for f in files if f.period]
@@ -190,6 +194,16 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
     #      mənfi qalıq — avans (sonrakı qaimələri bağlayır)
     openings = openings or {}
     od = opening_date(files)
+    early = 0
+    if openings.get("start"):
+        start = dt.date.fromisoformat(openings["start"])
+        od = start - dt.timedelta(days=1)
+        n0 = len(purchases) + len(sales) + len(deposit) + len(bank_ops)
+        purchases = [i for i in purchases if i.date >= start]
+        sales = [i for i in sales if i.date >= start]
+        deposit = [o for o in deposit if o.date >= start]
+        bank_ops = [o for o in bank_ops if o.date >= start]
+        early = n0 - (len(purchases) + len(sales) + len(deposit) + len(bank_ops))
     for r in openings.get("rows", []):
         v = voen(r.get("voen"))
         net, vat = round(float(r.get("net") or 0), 2), round(float(r.get("vat") or 0), 2)
@@ -203,6 +217,10 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
     deposit = list({(o.doc, o.date, o.medaxil, o.mexaric, o.voen): o for o in deposit}.values())
 
     issues: list[Issue] = []
+    if early:
+        issues.append(Issue("Baza: başlanğıc tarixindən əvvəlki sətirlər nəzərə alınmadı", od, "", "", 0.0,
+                            f"{early} sətir {fmt(od + dt.timedelta(days=1))} tarixindən əvvəldir. Onların təsiri "
+                            f"ilkin qalıqlarda olmalıdır.", None))
 
     # ---- kontragentlər (VÖEN → rəsmi ad)
     parties: dict[str, Party] = {}

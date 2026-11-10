@@ -38,6 +38,9 @@ Ayrıca proqram (`EDV_Hesabati.exe`, kodu `edv/` qovluğunda). e-taxes-dan alın
 qaimələri, ƏDV depozit çıxarışı və Kapital Bank çıxarışı olduğu kimi yüklənir; şirkət VÖEN-i fayllardan
 oxunur və bütün faylların eyni şirkətə aid olduğu yoxlanılır.
 
+* **Məlumat bazası** — şirkət (VÖEN) üzrə il boyu: ilkin qalıqlar bir dəfə yazılır, sonra hər ay yeni
+  fayllar əlavə olunur (təkrarlar atılır, statusu dəyişən qaimə yenilənir). İstənilən ay üçün hesabat
+  bazanın başlanğıcından bütün hərəkətlərlə hesablanır — ayın ilk və son qalığı düzgün çıxır.
 * **ƏDV yekunu** — aylar üzrə: alıcılardan banka daxil olan × 18% = hesablanmış ƏDV, depozitə daxil olan
   ƏDV, əvəzləşdirilən ƏDV (308), büdcəyə ödənilməli ƏDV, depozit qalığı.
 * **Əvəzləşmə** — alış qaimələrinə ödənişlər VÖEN üzrə FIFO ilə bağlanır (bank → ƏDV-siz hissə,

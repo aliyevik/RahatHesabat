@@ -178,6 +178,9 @@ class Summary:
                 line.append(n(fn(m), style, (key, m) if key else None))
             line.append(n(fn(None), style, (key, None) if key else None))
             g.rows.append(line)
+        prev = self.R.deposit_opening + sum(o.medaxil - o.mexaric for o in self.dep_all if o.date < self.a)
+        g.rows.append([t(f"ƏDV depozit qalığı ({fmt_date(self.a - dt.timedelta(days=1))} tarixinə)", CASH)] +
+                      [n(prev, CASH)] + [Cell(None, CASH) for _ in M[1:]] + [n(prev, CASH)])
         g.rows.append([t("ƏDV depozit qalığı (ay sonuna)", CASH)] +
                       [n(self.dep_balance(m), CASH) for m in M] + [n(self.dep_balance(M[-1]), CASH)])
         g.top_lines = [("Şirkət:", f"{self.R.company_name} (VÖEN {self.R.company_voen})"),

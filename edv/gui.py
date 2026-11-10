@@ -12,7 +12,7 @@ from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QIcon, QKeySequence
                            QShortcut)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDateEdit, QDialog,
                                QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+                               QHeaderView, QLabel, QLineEdit, QScrollArea, QListWidget, QListWidgetItem, QMainWindow,
                                QMessageBox, QPushButton, QStackedWidget, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -28,7 +28,8 @@ from rahat.gui import QSS, BluePanel, ReportTable, back_button, card, cell_text,
 from rahat.model import fmt_date, fmt_money
 
 from . import APP_NAME, APP_VERSION, PRESENTED_BY, PRESENTED_URL
-from .engine import check_files, compute, opening_date
+from .engine import compute
+from .store import Store, list_bases
 from .parsers import ParseError, load
 from .reports import (Advances, BankReport, Creditors, Debtors, IssuesReport, Offset, SalesReport, Summary, mlabel,
                       months_between)
@@ -144,16 +145,15 @@ class OpeningDialog(QDialog):
     """Kontragentlər üzrə ilkin qalıqlar (əsas məbləğ və ƏDV ayrıca), ƏDV depozit və bank qalığı."""
     SIDES = [("alis", "Kreditor — təchizatçıya borcumuz"), ("satis", "Debitor — alıcının bizə borcu")]
 
-    def __init__(self, parent, files, data):
+    def __init__(self, parent, files, data, od, comp_voen, comp_name):
         super().__init__(parent)
         self.files = files
         self.setWindowTitle("İlkin qalıqlar")
         self.resize(1050, 680)
-        comp = next((f for f in files if f.company_voen), None)
-        self.od = opening_date(files)
+        self.od = od
         lay = QVBoxLayout(self)
-        head = QLabel(f"<b>{comp.company_name if comp else ''}</b> · VÖEN {comp.company_voen if comp else ''}<br>"
-                      f"Qalıqlar <b>{fmt_date(self.od)}</b> tarixinə — yüklənən faylların başlanğıcından bir gün əvvəl.")
+        head = QLabel(f"<b>{comp_name}</b> · VÖEN {comp_voen}<br>"
+                      f"Qalıqlar <b>{fmt_date(self.od)}</b> tarixinə (bazanın başlanğıcından bir gün əvvəl).")
         head.setWordWrap(True)
         lay.addWidget(head)
         tip = QLabel("Müsbət məbləğ — borc; mənfi məbləğ — avans (məs. təchizatçıya avans vermişik). Əsas məbləğ "
@@ -166,6 +166,8 @@ class OpeningDialog(QDialog):
         g = QGridLayout()
         dep_file = next((f.opening for f in files if f.kind == "depozit" and f.opening is not None), None)
         bank_file = sum((f.opening or 0) for f in files if f.kind == "bank")
+        if not files:
+            dep_file = None
         self.dep = QLineEdit(fmt_money(data["deposit"]) if data.get("deposit") is not None else "")
         self.dep.setPlaceholderText(f"fayldan: {fmt_money(dep_file or 0)}")
         self.bank = QLineEdit(fmt_money(data["bank"]) if data.get("bank") is not None else "")
@@ -332,107 +334,175 @@ class OpeningDialog(QDialog):
         QMessageBox.information(self, "Yükləndi", f"{n_ok} sətir yükləndi. Yoxlayıb «Yadda saxla» basın.")
 
 
-# ===================================================================== fayllar səhifəsi
-class FilesPage(QWidget):
+# ===================================================================== məlumat bazası səhifəsi
+class BasePage(QWidget):
+    """İl boyu məlumat bazası: ilkin qalıqlar bir dəfə, sonra hər ay yeni fayllar əlavə olunur."""
+
     def __init__(self, main):
         super().__init__()
         self.main = main
-        self.files = []
+        self.store: Store | None = None
         self.setAcceptDrops(True)
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        sc = QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setFrameShape(QFrame.NoFrame)
+        body = QWidget()
+        sc.setWidget(body)
+        outer.addWidget(sc)
+        root = QVBoxLayout(body)
         root.setContentsMargins(22, 18, 22, 18)
         root.setSpacing(12)
-        t = QLabel("Fayllar və dövr")
+        t = QLabel("Məlumat bazası")
         t.setObjectName("pageTitle")
-        s = QLabel("e-taxes-dan və bankdan endirdiyiniz Excel faylları olduğu kimi seçin və ya bu pəncərəyə "
-                   "sürüşdürün. Proqram hər faylın növünü və şirkətin VÖEN-ini özü tanıyır.")
+        s = QLabel("İlin (dövrün) əvvəlinə qalıqları bir dəfə yazın, sonra hər ay e-taxes və bankdan endirdiyiniz "
+                   "faylları əlavə edin. Bütün məlumat bazada yığılır — istənilən ay üçün hesabat ilin əvvəlindən "
+                   "bütün hərəkətlər nəzərə alınaraq hesablanır, ayın ilk və son qalığı düzgün çıxır.")
         s.setObjectName("muted")
         s.setWordWrap(True)
         root.addWidget(t)
         root.addWidget(s)
 
-        c1, l1 = card("1. Fayllar")
+        # 1. Şirkət və başlanğıc
+        c1, l1 = card("1. Şirkət və ilkin qalıqlar")
+        g = QGridLayout()
+        self.company = QComboBox()
+        self.company.setMinimumWidth(420)
+        self.company.currentIndexChanged.connect(self._company_changed)
+        g.addWidget(QLabel("Şirkət:"), 0, 0)
+        g.addWidget(self.company, 0, 1, 1, 3)
+        self.start = QDateEdit()
+        self.start.setCalendarPopup(True)
+        self.start.setDisplayFormat("dd.MM.yyyy")
+        self.start.setDate(QDate(QDate.currentDate().year(), 1, 1))
+        self.start.dateChanged.connect(self._start_changed)
+        g.addWidget(QLabel("Bazanın başlanğıcı:"), 1, 0)
+        g.addWidget(self.start, 1, 1)
+        hint = QLabel("adətən ilin 1 yanvarı — qalıqlar bir gün əvvələ yazılır")
+        hint.setObjectName("muted")
+        g.addWidget(hint, 1, 2, 1, 2)
+        self.op_btn = QPushButton("İlkin qalıqları yaz…")
+        self.op_btn.clicked.connect(self.edit_openings)
+        g.addWidget(self.op_btn, 2, 0)
+        self.op_info = QLabel("")
+        self.op_info.setObjectName("muted")
+        self.op_info.setWordWrap(True)
+        g.addWidget(self.op_info, 2, 1, 1, 3)
+        g.setColumnStretch(3, 1)
+        l1.addLayout(g)
+        root.addWidget(c1)
+
+        # 2. Fayllar
+        c2, l2 = card("2. Faylları bazaya əlavə et")
         hb = QHBoxLayout()
         b = QPushButton("Faylları seç…")
+        b.setObjectName("primary")
         b.setCursor(Qt.PointingHandCursor)
         b.clicked.connect(self.pick)
-        rm = QPushButton("Seçilmiş faylı çıxar")
-        rm.clicked.connect(self.remove_selected)
-        clr = QPushButton("Hamısını təmizlə")
-        clr.clicked.connect(self.clear)
         hb.addWidget(b)
-        hb.addWidget(rm)
-        hb.addWidget(clr)
-        hb.addStretch(1)
-        l1.addLayout(hb)
-        self.company = QLabel("Şirkət: —")
-        self.company.setStyleSheet(f"font-weight:700; color:{theme.NAVY}; font-size:11pt;")
-        l1.addWidget(self.company)
-        self.slots = QLabel()
-        self.slots.setWordWrap(True)
-        l1.addWidget(self.slots)
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["Növ", "Fayl", "Şirkət / VÖEN", "Dövr", "Sətir", "Hesab"])
-        self.table.verticalHeader().setVisible(False)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.table.setMinimumHeight(200)
-        l1.addWidget(self.table)
-        root.addWidget(c1, 1)
+        hb2 = QLabel("və ya faylları bu pəncərəyə sürüşdürün. Təkrar sətirlər atılır, statusu dəyişən qaimə "
+                     "yenilənir (məs. «təsdiq gözləyən» → «təsdiqləndi»).")
+        hb2.setObjectName("muted")
+        hb2.setWordWrap(True)
+        hb.addWidget(hb2, 1)
+        self.del_btn = QPushButton("Bazanı sil")
+        self.del_btn.clicked.connect(self.delete_base)
+        hb.addWidget(self.del_btn)
+        l2.addLayout(hb)
+        self.stats = QLabel("")
+        self.stats.setStyleSheet(f"font-weight:600; color:{theme.NAVY};")
+        l2.addWidget(self.stats)
+        cov_title = QLabel("Aylar üzrə məlumat (sətir sayı) — boş xana o ay üçün fayl yüklənməyib deməkdir:")
+        cov_title.setObjectName("muted")
+        l2.addWidget(cov_title)
+        self.cov = QTableWidget(4, 0)
+        self.cov.setVerticalHeaderLabels([KIND_NAMES[k] for k in Store.KINDS])
+        self.cov.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.cov.setFixedHeight(180)
+        l2.addWidget(self.cov)
+        hist_title = QLabel("Yükləmə tarixçəsi:")
+        hist_title.setObjectName("muted")
+        l2.addWidget(hist_title)
+        self.hist = QTableWidget(0, 6)
+        self.hist.setHorizontalHeaderLabels(["Vaxt", "Növ", "Fayl", "Dövr", "Yeni", "Yenilənən"])
+        self.hist.verticalHeader().setVisible(False)
+        self.hist.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.hist.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.hist.setMinimumHeight(140)
+        l2.addWidget(self.hist)
+        root.addWidget(c2)
 
-        c2, l2 = card("2. Hesabat dövrü")
-        g = QGridLayout()
+        # 3. Hesabat dövrü
+        c3, l3 = card("3. Hesabat dövrü")
+        g3 = QGridLayout()
+        self.month = QComboBox()
+        self.month.setMinimumWidth(180)
+        self.month.activated.connect(self._month_picked)
+        g3.addWidget(QLabel("Ay:"), 0, 0)
+        g3.addWidget(self.month, 0, 1)
+        g3.addWidget(QLabel("və ya aralıq:"), 0, 2)
         self.d_from, self.d_to = QDateEdit(), QDateEdit()
         for d in (self.d_from, self.d_to):
             d.setCalendarPopup(True)
             d.setDisplayFormat("dd.MM.yyyy")
             d.setDate(QDate.currentDate())
             d.dateChanged.connect(self.period_info)
-        g.addWidget(QLabel("Başlanğıc:"), 0, 0)
-        g.addWidget(self.d_from, 0, 1)
-        g.addWidget(QLabel("Son:"), 0, 2)
-        g.addWidget(self.d_to, 0, 3)
-        quick = QComboBox()
-        quick.addItems(["Sürətli seçim…", "Keçən ay", "Bu ay", "Bu rüb", "Bu il", "Faylların bütün dövrü"])
-        quick.activated.connect(self.quick)
-        self.quick_box = quick
-        g.addWidget(quick, 0, 4)
-        g.setColumnStretch(5, 1)
-        l2.addLayout(g)
+        g3.addWidget(self.d_from, 0, 3)
+        g3.addWidget(QLabel("–"), 0, 4)
+        g3.addWidget(self.d_to, 0, 5)
+        g3.setColumnStretch(6, 1)
+        l3.addLayout(g3)
         self.pinfo = QLabel("")
         self.pinfo.setObjectName("muted")
-        l2.addWidget(self.pinfo)
-        root.addWidget(c2)
-
-        c3, l3 = card("3. İlkin qalıqlar")
-        h3 = QHBoxLayout()
-        self.op_info = QLabel("Faylları yükləyin.")
-        self.op_info.setObjectName("muted")
-        self.op_info.setWordWrap(True)
-        self.op_btn = QPushButton("İlkin qalıqları yaz…")
-        self.op_btn.setEnabled(False)
-        self.op_btn.clicked.connect(self.edit_openings)
-        h3.addWidget(self.op_info, 1)
-        h3.addWidget(self.op_btn)
-        l3.addLayout(h3)
+        self.pinfo.setWordWrap(True)
+        l3.addWidget(self.pinfo)
         root.addWidget(c3)
 
         self.go = QPushButton("Hesabla və hesabatları aç  →")
         self.go.setObjectName("primary")
         self.go.setMinimumHeight(44)
-        self.go.setEnabled(False)
         self.go.clicked.connect(self.run)
         root.addWidget(self.go)
+        root.addStretch(1)
+        self.reload_companies()
+
+    # --- şirkət
+    def reload_companies(self, select: str | None = None):
+        bases = list_bases()
+        self.company.blockSignals(True)
+        self.company.clear()
+        for v, name in bases:
+            self.company.addItem(f"{name} · VÖEN {v}", v)
+        if not bases:
+            self.company.addItem("— hələ baza yoxdur: faylları əlavə edin —", "")
+        idx = max(0, self.company.findData(select or self.main.settings.data.get("last_company", "")))
+        self.company.setCurrentIndex(idx)
+        self.company.blockSignals(False)
+        self._company_changed()
+
+    def _company_changed(self, *_):
+        v = self.company.currentData()
+        self.store = Store(v) if v else None
+        if v:
+            self.main.settings.data["last_company"] = v
+            self.main.settings.save()
         self.refresh()
+
+    def _start_changed(self, *_):
+        if self.store:
+            self.store.start = pydate(self.start.date())
+            self.refresh()
 
     # --- fayllar
     def pick(self):
-        start = self.main.settings.data.get("last_dir") or os.path.expanduser("~")
-        paths, _ = QFileDialog.getOpenFileNames(self, "Excel fayllarını seçin", start, "Excel (*.xlsx *.xlsm)")
+        st = self.main.settings
+        paths, _ = QFileDialog.getOpenFileNames(self, "Excel fayllarını seçin",
+                                                st.data.get("last_dir") or os.path.expanduser("~"),
+                                                "Excel (*.xlsx *.xlsm)")
         if paths:
-            self.main.settings.data["last_dir"] = os.path.dirname(paths[0])
-            self.main.settings.save()
+            st.data["last_dir"] = os.path.dirname(paths[0])
+            st.save()
             self.add(paths)
 
     def dragEnterEvent(self, e):
@@ -443,125 +513,159 @@ class FilesPage(QWidget):
         self.add([u.toLocalFile() for u in e.mimeData().urls() if u.toLocalFile().lower().endswith((".xlsx", ".xlsm"))])
 
     def add(self, paths):
-        errs = []
+        msgs, errs = [], []
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             for p in paths:
-                if any(os.path.abspath(f.path) == os.path.abspath(p) for f in self.files):
-                    continue
                 try:
                     f = load(p)
-                except ParseError as ex:
+                except Exception as ex:  # noqa
                     errs.append(f"{os.path.basename(p)}: {ex}")
                     continue
-                except Exception as ex:  # noqa
-                    errs.append(f"{os.path.basename(p)}: oxunmadı ({ex})")
+                if not f.company_voen:
+                    errs.append(f"{os.path.basename(p)}: şirkətin VÖEN-i tapılmadı.")
                     continue
-                other = check_files(self.files + [f])
-                if other:
-                    errs.append(f"{os.path.basename(p)}: {other[0]} Fayl əlavə edilmədi.")
-                    continue
-                self.files.append(f)
+                if self.store is None or self.store.voen != f.company_voen:
+                    QApplication.restoreOverrideCursor()
+                    exists = f.company_voen in [v for v, _ in list_bases()]
+                    q = (f"{os.path.basename(p)} faylı «{f.company_name}» (VÖEN {f.company_voen}) şirkətinə aiddir.\n\n" +
+                         ("Bu şirkətin bazasına keçilsin?" if exists else "Bu şirkət üçün yeni baza yaradılsın?"))
+                    if self.store is not None and QMessageBox.question(self, "Başqa şirkət", q) != QMessageBox.Yes:
+                        QApplication.setOverrideCursor(Qt.WaitCursor)
+                        continue
+                    QApplication.setOverrideCursor(Qt.WaitCursor)
+                    self.store = Store(f.company_voen, f.company_name)
+                    if not self.store.start:
+                        y = (f.period[0] if f.period else dt.date.today()).year
+                        self.store.start = dt.date(y, 1, 1)
+                    self.store.save()
+                    self.reload_companies(f.company_voen)
+                r = self.store.import_file(f)
+                msgs.append(f"✔ {KIND_NAMES[f.kind]} — {os.path.basename(p)}: yeni {r['added']}, "
+                            f"yenilənən {r['updated']}, artıq bazada olan {r['same']}")
         finally:
             QApplication.restoreOverrideCursor()
         self.refresh(set_period=True)
-        if errs:
-            QMessageBox.warning(self, "Diqqət", "\n\n".join(errs))
+        if msgs or errs:
+            QMessageBox.information(self, "Bazaya əlavə edildi", "\n".join(msgs + ([""] + errs if errs else [])))
 
-    def remove_selected(self):
-        rows = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)
-        for r in rows:
-            del self.files[r]
-        self.refresh()
+    def delete_base(self):
+        if not self.store:
+            return
+        if QMessageBox.question(self, "Bazanı sil",
+                                f"«{self.store.name}» şirkətinin bütün bazası (yüklənən məlumat və ilkin qalıqlar) "
+                                f"silinsin? Bu geri qaytarılmır.") != QMessageBox.Yes:
+            return
+        self.store.delete()
+        self.store = None
+        self.reload_companies()
 
-    def clear(self):
-        self.files = []
-        self.refresh()
-
+    # --- ekran
     def refresh(self, set_period=False):
-        self.table.setRowCount(len(self.files))
-        for r, f in enumerate(self.files):
-            per = f"{fmt_date(f.period[0])} – {fmt_date(f.period[1])}" if f.period else "—"
-            vals = [KIND_NAMES[f.kind], os.path.basename(f.path), f"{f.company_name} / {f.company_voen}",
-                    per, str(len(f.items)), f.account]
-            for c, v in enumerate(vals):
-                self.table.setItem(r, c, QTableWidgetItem(v))
-        self.table.resizeColumnsToContents()
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        comp = next((f for f in self.files if f.company_voen), None)
-        self.company.setText(f"Şirkət: {comp.company_name} · VÖEN {comp.company_voen}  ✓ bütün fayllarda eyni"
-                             if comp else "Şirkət: —")
-        have = {f.kind for f in self.files}
-        parts = []
-        for k, nm in KIND_NAMES.items():
-            ok = k in have
-            parts.append(f"<span style='color:{'#1E7B3C' if ok else '#A33A3A'}'>{'✔' if ok else '✖'} {nm}</span>")
-        self.slots.setText("&nbsp;&nbsp;&nbsp;".join(parts))
-        self.go.setEnabled(bool(self.files))
-        self.op_btn.setEnabled(bool(comp))
+        st = self.store
+        has = bool(st)
+        for w in (self.op_btn, self.del_btn, self.go, self.start, self.month):
+            w.setEnabled(has)
+        if not has:
+            self.stats.setText("")
+            self.op_info.setText("")
+            self.cov.setColumnCount(0)
+            self.hist.setRowCount(0)
+            self.month.clear()
+            return
+        self.start.blockSignals(True)
+        if st.start:
+            self.start.setDate(qdate(st.start))
+        self.start.blockSignals(False)
+        c = st.counts()
+        self.stats.setText(" · ".join(f"{KIND_NAMES[k]}: {c[k]}" for k in Store.KINDS))
+        cov = st.coverage()
+        months = sorted(cov)
+        if st.start:
+            months = sorted(set(months) | {(st.start.year, st.start.month)})
+        if months:
+            months = months_between(dt.date(*months[0], 1), dt.date(*months[-1], 1))
+        self.cov.setColumnCount(len(months))
+        self.cov.setHorizontalHeaderLabels([mlabel(m).replace(" ", "\n") for m in months])
+        for ci, m in enumerate(months):
+            for ri, k in enumerate(Store.KINDS):
+                nval = cov.get(m, {}).get(k, 0)
+                it = QTableWidgetItem(str(nval) if nval else "—")
+                it.setTextAlignment(Qt.AlignCenter)
+                it.setBackground(QBrush(QColor("#E5F4EA" if nval else "#FBEAEA")))
+                self.cov.setItem(ri, ci, it)
+        self.cov.resizeColumnsToContents()
+        imps = list(reversed(st.data.get("imports", [])))
+        self.hist.setRowCount(len(imps))
+        for r, imp in enumerate(imps):
+            per = (f"{fmt_date(dt.date.fromisoformat(imp['period'][0]))} – "
+                   f"{fmt_date(dt.date.fromisoformat(imp['period'][1]))}") if imp.get("period") else ""
+            for ci, v in enumerate([imp["at"], KIND_NAMES.get(imp["kind"], imp["kind"]), imp["file"], per,
+                                    str(imp["added"]), str(imp["updated"])]):
+                self.hist.setItem(r, ci, QTableWidgetItem(v))
+        self.hist.resizeColumnsToContents()
+        self.hist.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.update_op_info()
-        if set_period and self.files:
-            ds = [d for f in self.files if f.period for d in f.period]
-            if ds:
-                self.d_from.setDate(qdate(min(ds)))
-                self.d_to.setDate(qdate(min(max(ds), dt.date.today())))
+        # aylar
+        cur = self.month.currentData()
+        self.month.clear()
+        self.month.addItem("Ay seçin…", None)
+        for m in reversed(months):
+            self.month.addItem(mlabel(m), m)
+        if cur:
+            i = self.month.findData(cur)
+            if i >= 0:
+                self.month.setCurrentIndex(i)
+        if set_period and months:
+            last_full = next((m for m in reversed(months) if m != (dt.date.today().year, dt.date.today().month)),
+                             months[-1])
+            self._set_month(last_full)
         self.period_info()
 
-    def company_voen(self):
-        return next((f.company_voen for f in self.files if f.company_voen), "")
-
-    def openings(self):
-        return self.main.settings.data.setdefault("openings", {}).get(self.company_voen(), {})
-
     def update_op_info(self):
-        if not self.files:
-            self.op_info.setText("Faylları yükləyin.")
+        st = self.store
+        if not st:
             return
-        d = self.openings()
-        od = opening_date(self.files)
-        rows = d.get("rows", [])
+        o = st.data.get("openings") or {}
+        rows = o.get("rows", [])
         kr = [r for r in rows if r["side"] == "alis"]
         db = [r for r in rows if r["side"] == "satis"]
-        parts = [f"Tarix: <b>{fmt_date(od)}</b>"]
-        parts.append(f"kreditor: {len(kr)} kontragent, {fmt_money(sum(r['net'] + r['vat'] for r in kr))} AZN")
-        parts.append(f"debitor: {len(db)} kontragent, {fmt_money(sum(r['net'] + r['vat'] for r in db))} AZN")
-        if d.get("deposit") is not None:
-            parts.append(f"ƏDV depozit: {fmt_money(d['deposit'])}")
-        if d.get("bank") is not None:
-            parts.append(f"bank: {fmt_money(d['bank'])}")
-        if not rows and d.get("deposit") is None and d.get("bank") is None:
-            parts.append("hələ yazılmayıb — keçən dövrdən borc varsa, yazın")
+        od = (st.start or dt.date.today()) - dt.timedelta(days=1)
+        parts = [f"Qalıqlar <b>{fmt_date(od)}</b> tarixinə",
+                 f"kreditor: {len(kr)} kontragent, {fmt_money(sum(r['net'] + r['vat'] for r in kr))}",
+                 f"debitor: {len(db)} kontragent, {fmt_money(sum(r['net'] + r['vat'] for r in db))}"]
+        if o.get("deposit") is not None:
+            parts.append(f"ƏDV depozit: {fmt_money(o['deposit'])}")
+        if o.get("bank") is not None:
+            parts.append(f"bank: {fmt_money(o['bank'])}")
+        if not rows:
+            parts.append("<span style='color:#A33A3A'>hələ yazılmayıb</span>")
         self.op_info.setText(" · ".join(parts))
 
     def edit_openings(self):
-        dlg = OpeningDialog(self, self.files, self.openings())
+        if not self.store:
+            return
+        od = (self.store.start or dt.date.today()) - dt.timedelta(days=1)
+        dlg = OpeningDialog(self, self.store.source_files(), self.store.data.get("openings") or {}, od,
+                            self.store.voen, self.store.name)
         if dlg.exec() == QDialog.Accepted and dlg.result_data is not None:
-            self.main.settings.data.setdefault("openings", {})[self.company_voen()] = dlg.result_data
-            self.main.settings.save()
+            self.store.set_openings(dlg.result_data)
             self.update_op_info()
 
-    def quick(self, i):
-        today = dt.date.today()
-        if i == 1:
-            last = today.replace(day=1) - dt.timedelta(days=1)
-            a, b = last.replace(day=1), last
-        elif i == 2:
-            a, b = today.replace(day=1), today
-        elif i == 3:
-            q = (today.month - 1) // 3 * 3 + 1
-            a, b = dt.date(today.year, q, 1), today
-        elif i == 4:
-            a, b = dt.date(today.year, 1, 1), today
-        elif i == 5:
-            ds = [d for f in self.files if f.period for d in f.period]
-            if not ds:
-                return
-            a, b = min(ds), min(max(ds), today)
-        else:
-            return
+    # --- dövr
+    def _set_month(self, m):
+        a = dt.date(m[0], m[1], 1)
+        b = dt.date(m[0] + m[1] // 12, m[1] % 12 + 1, 1) - dt.timedelta(days=1)
         self.d_from.setDate(qdate(a))
         self.d_to.setDate(qdate(b))
-        self.quick_box.setCurrentIndex(0)
+        i = self.month.findData(m)
+        if i >= 0:
+            self.month.setCurrentIndex(i)
+
+    def _month_picked(self, i):
+        m = self.month.itemData(i)
+        if m:
+            self._set_month(tuple(m))
 
     def period(self):
         return pydate(self.d_from.date()), pydate(self.d_to.date())
@@ -571,25 +675,31 @@ class FilesPage(QWidget):
         if a > b:
             self.pinfo.setText("⚠ Başlanğıc tarix son tarixdən böyükdür.")
             return
-        ms = months_between(a, b)
-        self.pinfo.setText(f"Hesabatda {len(ms)} ay: {mlabel(ms[0]).split(chr(10))[0]} – "
-                           f"{mlabel(ms[-1]).split(chr(10))[0]}. FIFO bütün yüklənmiş tarixçə üzrə aparılır, "
-                           f"hesabata isə yalnız seçilmiş dövr düşür.")
+        txt = f"Hesabat: {fmt_date(a)} – {fmt_date(b)}."
+        if self.store and self.store.start:
+            if a < self.store.start:
+                txt += f" ⚠ Dövr bazanın başlanğıcından ({fmt_date(self.store.start)}) əvvəldən başlayır."
+            else:
+                txt += (f" İlk qalıq {fmt_date(self.store.start)} tarixindən {fmt_date(a)} tarixinədək bütün "
+                        f"hərəkətlər nəzərə alınaraq hesablanacaq.")
+        self.pinfo.setText(txt)
 
     def run(self):
+        if not self.store:
+            return
         a, b = self.period()
         if a > b:
             QMessageBox.warning(self, "Dövr", "Başlanğıc tarix son tarixdən böyükdür.")
             return
-        have = {f.kind for f in self.files}
-        miss = [KIND_NAMES[k] for k in KIND_NAMES if k not in have]
-        if miss and QMessageBox.question(self, "Fayllar natamamdır",
-                                         "Bu fayllar yoxdur:\n• " + "\n• ".join(miss) +
-                                         "\n\nOnlarsız hesablansın? (uyğun hissələr boş olacaq)") != QMessageBox.Yes:
+        c = self.store.counts()
+        miss = [KIND_NAMES[k] for k in Store.KINDS if not c[k]]
+        if miss and QMessageBox.question(self, "Bazada məlumat natamamdır",
+                                         "Bazada bu növ məlumat yoxdur:\n• " + "\n• ".join(miss) +
+                                         "\n\nYenə də hesablansın?") != QMessageBox.Yes:
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            R = compute(self.files, self.openings())
+            R = compute(self.store.source_files(), self.store.openings())
         finally:
             QApplication.restoreOverrideCursor()
         self.main.set_result(R, a, b)
@@ -883,7 +993,7 @@ def export_appendix(page: GridPage):
 # ===================================================================== əsas pəncərə
 class Main(QMainWindow):
     PAGES = [
-        ("📁   Fayllar və dövr", None),
+        ("🗄   Məlumat bazası", None),
         ("🧾   ƏDV yekunu", (Summary, "ƏDV yekunu", "ƏDV yekunu", None)),
         ("🔁   Əvəzləşmə (alış)", (Offset, "Əvəzləşmə", "Əvəzləşmə",
                                [("e-taxes «Əlavə 1» faylı", export_appendix)])),
@@ -928,7 +1038,7 @@ class Main(QMainWindow):
         self.nav.setObjectName("sidebar")
         self.nav.setFixedWidth(270)
         self.stack = QStackedWidget()
-        self.files_page = FilesPage(self)
+        self.files_page = BasePage(self)
         self.pages = []
         for label, spec in self.PAGES:
             QListWidgetItem(label, self.nav)
@@ -950,7 +1060,7 @@ class Main(QMainWindow):
             self.nav.blockSignals(True)
             self.nav.setCurrentRow(0)
             self.nav.blockSignals(False)
-            QMessageBox.information(self, APP_NAME, "Əvvəlcə faylları yükləyin və «Hesabla» düyməsini basın.")
+            QMessageBox.information(self, APP_NAME, "Əvvəlcə «Məlumat bazası» səhifəsində dövrü seçib «Hesabla» düyməsini basın.")
             return
         self.stack.setCurrentIndex(i)
 
