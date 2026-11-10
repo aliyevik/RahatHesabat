@@ -10,7 +10,7 @@ import traceback
 from PySide6.QtCore import QDate, Qt, QTimer, QUrl
 from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QIcon, QKeySequence, QPalette,
                            QShortcut)
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDateEdit, QDialog,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QDialog,
                                QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
                                QHeaderView, QLabel, QLineEdit, QScrollArea, QListWidget, QListWidgetItem, QMainWindow,
                                QMessageBox, QPushButton, QStackedWidget, QTableWidget,
@@ -751,6 +751,11 @@ class GridPage(QWidget):
                 eb.setCursor(Qt.PointingHandCursor)
                 eb.clicked.connect(lambda _=False, f=fn: f(self))
                 bar.addWidget(eb)
+        self.monthly = QCheckBox("Aylar üzrə")
+        self.monthly.setToolTip("İşarələsəniz — hər ay ayrıca; söndürülü — dövr üzrə cəm")
+        self.monthly.setVisible(hasattr(cls, "monthly"))
+        self.monthly.toggled.connect(self._monthly_toggled)
+        bar.addWidget(self.monthly)
         z_out, z_in = QPushButton("−"), QPushButton("+")
         for zb in (z_out, z_in):
             zb.setFixedWidth(38)
@@ -812,8 +817,18 @@ class GridPage(QWidget):
         today = fmt_date(dt.date.today())
         return [s.replace("{tarix}", today) for s in self.main.settings.data["signature"] if s.strip()]
 
+    def _monthly_toggled(self, on):
+        if self.rep is None:
+            return
+        self.rep.monthly = on
+        self.grid = self.rep.grid(self.signature())
+        self.views.setCurrentIndex(0)
+        self.render()
+
     def load(self, R, a, b):
         self.rep = self.cls(R, a, b)
+        if hasattr(self.rep, "monthly"):
+            self.rep.monthly = self.monthly.isChecked()
         self.grid = self.rep.grid(self.signature())
         self.info.setText(" · ".join(f"{k} <b>{fmt_money(v) if isinstance(v, (int, float)) else v}</b>"
                                      for k, v in self.grid.top_lines))
