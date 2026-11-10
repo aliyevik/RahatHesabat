@@ -81,7 +81,8 @@ DEP_HEAD = ["Tarix", "Kontragent", "VÖEN", "Növ", "Təyinat", "Qaimələr (ç�
 
 
 def _alloc_row(a):
-    src = "Bank" if a.kind == "net" else "ƏDV depozit"
+    src = ("İlkin avans" if getattr(a.pay, "is_opening", False) else
+           "Bank" if a.kind == "net" else "ƏDV depozit")
     pdate = a.pay.date
     return [fmt_date(a.date), a.invoice.number, a.invoice.name, a.invoice.voen, src, fmt_date(pdate),
             a.amount if a.kind == "net" else 0.0, a.amount if a.kind == "vat" else 0.0]
@@ -103,7 +104,9 @@ class Summary:
         self.recv = [r for r in R.bank if r.category == IN_SALES and inp(r.op.date)]
         self.dep_in = [o for o in R.deposit if o.medaxil and o.executed and inp(o.date)]
         self.pur_inv = [i for i in R.purchases if i.status_group == "tesdiq" and not i.is_advance and inp(i.date)]
-        self.alloc = [x for x in R.allocs if inp(x.date) and x.invoice.status_group == "tesdiq"]
+        self.alloc = [x for x in R.allocs if inp(x.date) and x.invoice.status_group == "tesdiq"
+                      and not x.invoice.is_opening]
+        self.alloc_open = [x for x in R.allocs if inp(x.date) and x.invoice.is_opening]
         self.alloc_pending = [x for x in R.allocs if inp(x.date) and x.invoice.status_group == "gozleyen"]
         self.dep_budget = [o for o in R.deposit if o.mexaric and o.is_budget and o.executed and inp(o.date)]
         self.dep_all = [o for o in R.deposit if o.executed]
@@ -137,6 +140,9 @@ class Summary:
              lambda m=None: self.by_m([x for x in self.alloc if x.kind == "net"], lambda x: x.date,
                                       lambda x: x.amount, m)),
             ("308 · Əvəzləşdirilən ƏDV (depozitdən, FIFO)", "alloc_vat", alloc_vat),
+            ("Keçən dövr borclarına (ilkin qalıq) ödənilmiş ƏDV — Əlavə 1-ə düşmür", "alloc_open",
+             lambda m=None: self.by_m([x for x in self.alloc_open if x.kind == "vat"], lambda x: x.date,
+                                      lambda x: x.amount, m)),
             ("Təsdiq gözləyən qaimələrə ödənilmiş ƏDV (daxil edilmir)", "alloc_pending",
              lambda m=None: self.by_m([x for x in self.alloc_pending if x.kind == "vat"], lambda x: x.date,
                                       lambda x: x.amount, m)),
@@ -210,13 +216,14 @@ class Summary:
             return Detail(title, f"{when} · {len(items)} əməliyyat", DEP_HEAD, [_dep_row(o) for o in items],
                           {6, 7}, [("Mədaxil", sum(o.medaxil for o in items)),
                                    ("Məxaric", sum(o.mexaric for o in items))])
-        if key in ("alloc_net", "alloc_vat", "alloc_pending"):
-            src = self.alloc_pending if key == "alloc_pending" else \
+        if key in ("alloc_net", "alloc_vat", "alloc_pending", "alloc_open"):
+            src = self.alloc_pending if key == "alloc_pending" else self.alloc_open if key == "alloc_open" else \
                 [x for x in self.alloc if x.kind == ("net" if key == "alloc_net" else "vat")]
             items = sorted([x for x in src if f(x.date)], key=lambda x: (x.date, x.invoice.number))
             return Detail({"alloc_net": "Ödənilmiş məbləğ (ƏDV-siz) — FIFO bağlantıları",
                            "alloc_vat": "Əvəzləşdirilən ƏDV — FIFO bağlantıları",
-                           "alloc_pending": "Təsdiq gözləyən qaimələrə ödənişlər"}[key],
+                           "alloc_pending": "Təsdiq gözləyən qaimələrə ödənişlər",
+                           "alloc_open": "Keçən dövr borclarına (ilkin qalıq) ödənişlər"}[key],
                           f"{when} · {len(items)} bağlantı", ALLOC_HEAD, [_alloc_row(x) for x in items], {6, 7},
                           [("ƏDV-siz", sum(x.amount for x in items if x.kind == "net")),
                            ("ƏDV", sum(x.amount for x in items if x.kind == "vat"))])
@@ -292,7 +299,7 @@ class Offset:
                 vals = [i.yekun, b[0], b[1], before, pn, pv, pn + pv, rest]
                 for k, x in enumerate(vals):
                     tot[k] += x
-                if i.status_group == "tesdiq":
+                if i.status_group == "tesdiq" and not i.is_opening:
                     self.offset_vat += pv
                     self.offset_net += pn
                 ref = ("inv", id(i))
@@ -326,7 +333,7 @@ class Offset:
         """e-taxes «Əlavə 1» faylı: 308 | seriya | nömrə | ödənilmiş ümumi məbləğ."""
         out = []
         for i in self.invoices:
-            if i.status_group != "tesdiq":
+            if i.status_group != "tesdiq" or i.is_opening:
                 continue
             s = round(sum(x.amount for x in self.by_inv[id(i)] if mkey(x.date) == month), 2)
             if s > 0.004:
@@ -420,7 +427,7 @@ class BankReport:
         g.head_rows = [[t("Kateqoriya", HEAD)] + [t(mlabel(m, self.a, self.b), HEAD, "center") for m in M] +
                        [t("Cəmi", HEAD, "center")]]
         before = sum(r.op.amount for r in self.R.bank if r.op.date < self.a)
-        opening = sum((f.opening or 0) for f in self.R.files if f.kind == "bank") + before
+        opening = self.R.bank_opening + before
         g.rows.append([t("Dövrün əvvəlinə qalıq", CASH)] + [Cell(None, CASH) for _ in M] + [n(opening, CASH)])
 
         def sect(title, cats, sign):
@@ -495,11 +502,12 @@ class Debts:
             if i.is_advance:
                 used = R.adv_used.get(id(i), 0.0)
                 note = (f"avans {i.yekun:,.2f}, MT ilə bağlanıb {used:,.2f}").replace(",", " ")
+            label = i.kind_label if i.is_opening else f"{i.kind_label} · {i.status}"
             if b is None:
-                ev.append((i.date, f"{i.kind_label} · {i.status}", i.number, 0, 0, 0, 0,
+                ev.append((i.date, label, i.number, 0, 0, 0, 0,
                            (note + " · " if note else "") + "passiv — hesaba alınmır"))
             else:
-                ev.append((i.date, f"{i.kind_label} · {i.status}", i.number, b[0], b[1], 0, 0,
+                ev.append((i.date, label, i.number, b[0], b[1], 0, 0,
                            (note + " · hesaba alınan: açıq qalıq") if note else ""))
         for r in R.bank:
             if r.op.cp_voen != v:

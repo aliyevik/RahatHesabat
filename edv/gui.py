@@ -12,20 +12,23 @@ from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QIcon, QKeySequence
                            QShortcut)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDateEdit, QDialog,
                                QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
-                               QHeaderView, QLabel, QListWidget, QListWidgetItem, QMainWindow,
+                               QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
                                QMessageBox, QPushButton, QStackedWidget, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
+import re
+
+import openpyxl
 from openpyxl import Workbook
 
 from rahat import theme
 from rahat.export_excel import save_grid_xlsx
 from rahat.export_pdf import resource_path, save_grid_pdf
-from rahat.gui import QSS, BluePanel, ReportTable, back_button, card, cell_text, pydate, qdate
+from rahat.gui import QSS, BluePanel, ReportTable, back_button, card, cell_text, parse_amount, pydate, qdate
 from rahat.model import fmt_date, fmt_money
 
 from . import APP_NAME, APP_VERSION, PRESENTED_BY, PRESENTED_URL
-from .engine import check_files, compute
+from .engine import check_files, compute, opening_date
 from .parsers import ParseError, load
 from .reports import (Advances, BankReport, Creditors, Debtors, IssuesReport, Offset, SalesReport, Summary, mlabel,
                       months_between)
@@ -136,6 +139,199 @@ class Welcome(QWidget):
         self.close()
 
 
+# ===================================================================== ilkin qalıqlar
+class OpeningDialog(QDialog):
+    """Kontragentlər üzrə ilkin qalıqlar (əsas məbləğ və ƏDV ayrıca), ƏDV depozit və bank qalığı."""
+    SIDES = [("alis", "Kreditor — təchizatçıya borcumuz"), ("satis", "Debitor — alıcının bizə borcu")]
+
+    def __init__(self, parent, files, data):
+        super().__init__(parent)
+        self.files = files
+        self.setWindowTitle("İlkin qalıqlar")
+        self.resize(1050, 680)
+        comp = next((f for f in files if f.company_voen), None)
+        self.od = opening_date(files)
+        lay = QVBoxLayout(self)
+        head = QLabel(f"<b>{comp.company_name if comp else ''}</b> · VÖEN {comp.company_voen if comp else ''}<br>"
+                      f"Qalıqlar <b>{fmt_date(self.od)}</b> tarixinə — yüklənən faylların başlanğıcından bir gün əvvəl.")
+        head.setWordWrap(True)
+        lay.addWidget(head)
+        tip = QLabel("Müsbət məbləğ — borc; mənfi məbləğ — avans (məs. təchizatçıya avans vermişik). Əsas məbləğ "
+                     "bankla, ƏDV depozitlə bağlanır. İlkin borclar sonrakı ödənişlərlə ilk növbədə (FIFO) bağlanır. "
+                     "Sıfır olan sətirlər nəzərə alınmır.")
+        tip.setObjectName("muted")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+
+        g = QGridLayout()
+        dep_file = next((f.opening for f in files if f.kind == "depozit" and f.opening is not None), None)
+        bank_file = sum((f.opening or 0) for f in files if f.kind == "bank")
+        self.dep = QLineEdit(fmt_money(data["deposit"]) if data.get("deposit") is not None else "")
+        self.dep.setPlaceholderText(f"fayldan: {fmt_money(dep_file or 0)}")
+        self.bank = QLineEdit(fmt_money(data["bank"]) if data.get("bank") is not None else "")
+        self.bank.setPlaceholderText(f"fayldan: {fmt_money(bank_file)}")
+        for w in (self.dep, self.bank):
+            w.setAlignment(Qt.AlignRight)
+            w.setMaximumWidth(180)
+        g.addWidget(QLabel("ƏDV depozit hesabının qalığı:"), 0, 0)
+        g.addWidget(self.dep, 0, 1)
+        g.addWidget(QLabel("Bank hesabının qalığı:"), 0, 2)
+        g.addWidget(self.bank, 0, 3)
+        hint = QLabel("boş qalsa — çıxarışdakı rəqəm götürülür")
+        hint.setObjectName("muted")
+        g.addWidget(hint, 0, 4)
+        g.setColumnStretch(5, 1)
+        lay.addLayout(g)
+
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["VÖEN", "Kontragent", "Növ", "Əsas məbləğ (ƏDV-siz)", "ƏDV"])
+        self.table.verticalHeader().setVisible(False)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(1, QHeaderView.Stretch)
+        for c, w in ((0, 120), (2, 270), (3, 170), (4, 140)):
+            self.table.setColumnWidth(c, w)
+        lay.addWidget(self.table, 1)
+
+        saved = {(r["voen"], r.get("side", "alis")): r for r in data.get("rows", [])}
+        known = {}
+        for f in files:
+            if f.kind in ("alis", "satis"):
+                for i in f.items:
+                    known.setdefault((i.voen, f.kind), i.name)
+        for key, r in saved.items():
+            known.setdefault(key, r.get("name", ""))
+        for (v, side), name in sorted(known.items(), key=lambda kv: (kv[0][1], kv[1].lower())):
+            r = saved.get((v, side), {})
+            self.add_row(v, name, side, r.get("net", 0.0), r.get("vat", 0.0))
+
+        bl = QHBoxLayout()
+        for text, fn in (("Sətir əlavə et", lambda: self.add_row("", "", "alis", 0, 0)),
+                         ("Seçilmiş sətri sil", self.del_row),
+                         ("Excel şablonu endir", self.export_tpl),
+                         ("Excel-dən yüklə", self.import_xlsx)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            bl.addWidget(b)
+        bl.addStretch(1)
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Save).setText("Yadda saxla")
+        bb.button(QDialogButtonBox.Save).setObjectName("primary")
+        bb.button(QDialogButtonBox.Cancel).setText("İmtina")
+        bb.accepted.connect(self.accept_if_valid)
+        bb.rejected.connect(self.reject)
+        bl.addWidget(bb)
+        lay.addLayout(bl)
+        self.result_data = None
+
+    def add_row(self, v, name, side, net, vat):
+        r = self.table.rowCount()
+        self.table.insertRow(r)
+        self.table.setItem(r, 0, QTableWidgetItem(v))
+        self.table.setItem(r, 1, QTableWidgetItem(name))
+        cb = QComboBox()
+        for k, label in self.SIDES:
+            cb.addItem(label, k)
+        cb.setCurrentIndex(0 if side == "alis" else 1)
+        self.table.setCellWidget(r, 2, cb)
+        for c, x in ((3, net), (4, vat)):
+            it = QTableWidgetItem(fmt_money(x) if abs(x or 0) > 0.004 else "")
+            it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.table.setItem(r, c, it)
+
+    def del_row(self):
+        for r in sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True):
+            self.table.removeRow(r)
+
+    def collect(self):
+        rows, bad = [], []
+        for r in range(self.table.rowCount()):
+            txt = lambda c: self.table.item(r, c).text() if self.table.item(r, c) else ""
+            try:
+                net, vat = parse_amount(txt(3)), parse_amount(txt(4))
+            except ValueError:
+                bad.append(f"Sətir {r + 1}: məbləğ düzgün yazılmayıb")
+                continue
+            if abs(net) < 0.005 and abs(vat) < 0.005:
+                continue
+            v = re.sub(r"\D", "", txt(0))
+            if len(v) != 10:
+                bad.append(f"Sətir {r + 1}: VÖEN 10 rəqəm olmalıdır")
+                continue
+            rows.append({"voen": v, "name": txt(1).strip(), "side": self.table.cellWidget(r, 2).currentData(),
+                         "net": net, "vat": vat})
+        out = {"date": self.od.isoformat(), "rows": rows}
+        for key, w in (("deposit", self.dep), ("bank", self.bank)):
+            try:
+                out[key] = parse_amount(w.text()) if w.text().strip() else None
+            except ValueError:
+                bad.append(f"{'ƏDV depozit' if key == 'deposit' else 'Bank'} qalığı düzgün yazılmayıb")
+        return out, bad
+
+    def accept_if_valid(self):
+        out, bad = self.collect()
+        if bad:
+            QMessageBox.warning(self, "Düzəldin", "\n".join(bad))
+            return
+        self.result_data = out
+        self.accept()
+
+    def export_tpl(self):
+        p, _ = QFileDialog.getSaveFileName(self, "Şablon", os.path.join(os.path.expanduser("~"),
+                                           "Ilkin qaliqlar.xlsx"), "Excel (*.xlsx)")
+        if not p:
+            return
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "İlkin qalıqlar"
+        ws.append(["VÖEN", "Kontragent", "Növ (Kreditor/Debitor)", "Əsas məbləğ (ƏDV-siz)", "ƏDV"])
+        for r in range(self.table.rowCount()):
+            txt = lambda c: self.table.item(r, c).text() if self.table.item(r, c) else ""
+            side = "Debitor" if self.table.cellWidget(r, 2).currentData() == "satis" else "Kreditor"
+            vals = []
+            for c in (3, 4):
+                try:
+                    vals.append(parse_amount(txt(c)))
+                except ValueError:
+                    vals.append(0.0)
+            ws.append([txt(0), txt(1), side] + vals)
+        for col, w in zip("ABCDE", (14, 50, 24, 22, 14)):
+            ws.column_dimensions[col].width = w
+        wb.save(p)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(p))
+
+    def import_xlsx(self):
+        p, _ = QFileDialog.getOpenFileName(self, "İlkin qalıqlar faylı", os.path.expanduser("~"), "Excel (*.xlsx)")
+        if not p:
+            return
+        try:
+            ws = openpyxl.load_workbook(p, data_only=True).active
+        except Exception as ex:  # noqa
+            QMessageBox.warning(self, "Oxunmadı", str(ex))
+            return
+        existing = {}
+        for r in range(self.table.rowCount()):
+            v = self.table.item(r, 0).text() if self.table.item(r, 0) else ""
+            existing[(v, self.table.cellWidget(r, 2).currentData())] = r
+        n_ok = 0
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not row or not row[0]:
+                continue
+            v = re.sub(r"\D", "", str(row[0]))
+            if len(v) != 10:
+                continue
+            side = "satis" if str(row[2] or "").strip().lower().startswith("d") else "alis"
+            net = row[3] if isinstance(row[3], (int, float)) else parse_amount(str(row[3] or "0"))
+            vat = row[4] if len(row) > 4 and isinstance(row[4], (int, float)) else parse_amount(str((row[4] if len(row) > 4 else 0) or "0"))
+            if (v, side) in existing:
+                r = existing[(v, side)]
+                self.table.item(r, 3).setText(fmt_money(net) if abs(net) > 0.004 else "")
+                self.table.item(r, 4).setText(fmt_money(vat) if abs(vat) > 0.004 else "")
+            else:
+                self.add_row(v, str(row[1] or ""), side, net, vat)
+            n_ok += 1
+        QMessageBox.information(self, "Yükləndi", f"{n_ok} sətir yükləndi. Yoxlayıb «Yadda saxla» basın.")
+
+
 # ===================================================================== fayllar səhifəsi
 class FilesPage(QWidget):
     def __init__(self, main):
@@ -208,6 +404,19 @@ class FilesPage(QWidget):
         self.pinfo.setObjectName("muted")
         l2.addWidget(self.pinfo)
         root.addWidget(c2)
+
+        c3, l3 = card("3. İlkin qalıqlar")
+        h3 = QHBoxLayout()
+        self.op_info = QLabel("Faylları yükləyin.")
+        self.op_info.setObjectName("muted")
+        self.op_info.setWordWrap(True)
+        self.op_btn = QPushButton("İlkin qalıqları yaz…")
+        self.op_btn.setEnabled(False)
+        self.op_btn.clicked.connect(self.edit_openings)
+        h3.addWidget(self.op_info, 1)
+        h3.addWidget(self.op_btn)
+        l3.addLayout(h3)
+        root.addWidget(c3)
 
         self.go = QPushButton("Hesabla və hesabatları aç  →")
         self.go.setObjectName("primary")
@@ -289,12 +498,47 @@ class FilesPage(QWidget):
             parts.append(f"<span style='color:{'#1E7B3C' if ok else '#A33A3A'}'>{'✔' if ok else '✖'} {nm}</span>")
         self.slots.setText("&nbsp;&nbsp;&nbsp;".join(parts))
         self.go.setEnabled(bool(self.files))
+        self.op_btn.setEnabled(bool(comp))
+        self.update_op_info()
         if set_period and self.files:
             ds = [d for f in self.files if f.period for d in f.period]
             if ds:
                 self.d_from.setDate(qdate(min(ds)))
                 self.d_to.setDate(qdate(min(max(ds), dt.date.today())))
         self.period_info()
+
+    def company_voen(self):
+        return next((f.company_voen for f in self.files if f.company_voen), "")
+
+    def openings(self):
+        return self.main.settings.data.setdefault("openings", {}).get(self.company_voen(), {})
+
+    def update_op_info(self):
+        if not self.files:
+            self.op_info.setText("Faylları yükləyin.")
+            return
+        d = self.openings()
+        od = opening_date(self.files)
+        rows = d.get("rows", [])
+        kr = [r for r in rows if r["side"] == "alis"]
+        db = [r for r in rows if r["side"] == "satis"]
+        parts = [f"Tarix: <b>{fmt_date(od)}</b>"]
+        parts.append(f"kreditor: {len(kr)} kontragent, {fmt_money(sum(r['net'] + r['vat'] for r in kr))} AZN")
+        parts.append(f"debitor: {len(db)} kontragent, {fmt_money(sum(r['net'] + r['vat'] for r in db))} AZN")
+        if d.get("deposit") is not None:
+            parts.append(f"ƏDV depozit: {fmt_money(d['deposit'])}")
+        if d.get("bank") is not None:
+            parts.append(f"bank: {fmt_money(d['bank'])}")
+        if not rows and d.get("deposit") is None and d.get("bank") is None:
+            parts.append("hələ yazılmayıb — keçən dövrdən borc varsa, yazın")
+        self.op_info.setText(" · ".join(parts))
+
+    def edit_openings(self):
+        dlg = OpeningDialog(self, self.files, self.openings())
+        if dlg.exec() == QDialog.Accepted and dlg.result_data is not None:
+            self.main.settings.data.setdefault("openings", {})[self.company_voen()] = dlg.result_data
+            self.main.settings.save()
+            self.update_op_info()
 
     def quick(self, i):
         today = dt.date.today()
@@ -345,7 +589,7 @@ class FilesPage(QWidget):
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            R = compute(self.files)
+            R = compute(self.files, self.openings())
         finally:
             QApplication.restoreOverrideCursor()
         self.main.set_result(R, a, b)

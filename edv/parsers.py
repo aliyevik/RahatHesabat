@@ -126,10 +126,18 @@ class Invoice:
 
     @property
     def is_advance(self) -> bool:
+        if self.tip == "İlkin qalıq":
+            return False
         return self.seria.upper().startswith("AA") or "avans" in self.novu.lower()
 
     @property
+    def is_opening(self) -> bool:
+        return self.tip == "İlkin qalıq"
+
+    @property
     def kind_label(self) -> str:
+        if self.is_opening:
+            return "İlkin qalıq"
         if self.is_advance:
             return "AA · avans"
         if self.seria.upper().startswith("MT"):

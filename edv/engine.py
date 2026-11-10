@@ -9,7 +9,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from . import VAT_RATE
-from .parsers import BankOp, DepositOp, Invoice, SourceFile
+from .parsers import BankOp, DepositOp, Invoice, SourceFile, voen
 
 # Büdcə / sosial fondlar (VÖEN → qısa ad)
 BUDGET_VOENS = {
@@ -142,6 +142,8 @@ class Result:
     issues: list
     deposit_opening: float
     data_range: tuple
+    bank_opening: float = 0.0
+    opening_date: dt.date | None = None
     base: dict = field(default_factory=dict)       # id(qaimə) -> (ƏDV-siz, ƏDV) — hesaba alınan
     adv_used: dict = field(default_factory=dict)   # id(avans) -> istifadə olunan məbləğ
     adv_uses: dict = field(default_factory=dict)   # id(avans) -> [(MT qaimə, məbləğ)]
@@ -153,7 +155,16 @@ class Result:
 
 
 # ----------------------------------------------------------------- əsas hesablama
-def compute(files: list[SourceFile]) -> Result:
+def opening_date(files: list[SourceFile]) -> dt.date:
+    """İlkin qalıqların tarixi: yüklənən faylların ən erkən başlanğıcından bir gün əvvəl."""
+    ds = [f.period[0] for f in files if f.period]
+    ds += [x.date for f in files for x in f.items if getattr(x, "date", None)]
+    return (min(ds) if ds else dt.date.today()) - dt.timedelta(days=1)
+
+
+def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
+    """openings: {"date": iso, "deposit": float|None, "bank": float|None,
+                  "rows": [{"voen", "name", "side": "alis"|"satis", "net", "vat"}]}"""
     comp = next((f for f in files if f.company_voen), None)
     company_voen = comp.company_voen if comp else ""
     company_name = comp.company_name if comp else ""
@@ -174,6 +185,21 @@ def compute(files: list[SourceFile]) -> Result:
     # dublikat qaimələr (eyni fayl iki dəfə yüklənəndə)
     purchases = list({(i.seria, i.nomre): i for i in purchases}.values())
     sales = list({(i.seria, i.nomre): i for i in sales}.values())
+
+    # ---- ilkin qalıqlar: kontragent üzrə borc «İlkin qalıq» qaiməsi kimi (FIFO-da ilk bağlanır);
+    #      mənfi qalıq — avans (sonrakı qaimələri bağlayır)
+    openings = openings or {}
+    od = opening_date(files)
+    for r in openings.get("rows", []):
+        v = voen(r.get("voen"))
+        net, vat = round(float(r.get("net") or 0), 2), round(float(r.get("vat") or 0), 2)
+        if not v or (abs(net) < 0.005 and abs(vat) < 0.005):
+            continue
+        inv = Invoice(side=r.get("side", "alis"), voen=v, name=r.get("name") or v, tip="İlkin qalıq",
+                      status="İlkin qalıq", date=od, seria="İLKİN", nomre="", novu="İlkin qalıq",
+                      note="Əllə yazılmış ilkin qalıq", note2="", edvsiz=net, edv=vat, celb=net,
+                      celb_olmayan=0.0, azad=0.0, sifir=0.0, yekun=round(net + vat, 2), source="ilkin")
+        (sales if inv.side == "satis" else purchases).append(inv)
     deposit = list({(o.doc, o.date, o.medaxil, o.mexaric, o.voen): o for o in deposit}.values())
 
     issues: list[Issue] = []
@@ -269,7 +295,9 @@ def compute(files: list[SourceFile]) -> Result:
         for v in set(by_v) | set(payments_by_voen):
             invs = sorted(by_v.get(v, []), key=lambda i: (i.date, i.nomre))
             due = [[i, amount_of(i)] for i in invs if amount_of(i) > 0.004]
-            pays = sorted(payments_by_voen.get(v, []), key=lambda x: (x[0].date, str(getattr(x[0], "doc", ""))))
+            credits = [(i, -amount_of(i)) for i in invs if amount_of(i) < -0.004]   # ilkin avans
+            pays = sorted(credits + list(payments_by_voen.get(v, [])),
+                          key=lambda x: (x[0].date, str(getattr(x[0], "doc", ""))))
             qi = 0
             for pay, amt in pays:
                 rest = amt
@@ -325,6 +353,8 @@ def compute(files: list[SourceFile]) -> Result:
                     continue
                 ratio = i.edv / i.yekun if i.yekun else 0.0
                 base[id(i)] = (round(rem * (1 - ratio), 2), round(rem * ratio, 2))
+            elif i.is_opening:
+                base[id(i)] = (i.edvsiz, i.edv)
             elif i.status_group != "passiv":
                 base[id(i)] = (i.net, i.edv)
 
@@ -393,7 +423,7 @@ def compute(files: list[SourceFile]) -> Result:
 
     paid_ids = {id(x.invoice) for x in allocs}
     for inv in active_p:
-        if id(inv) not in paid_ids and inv.status_group == "tesdiq":
+        if id(inv) not in paid_ids and inv.status_group == "tesdiq" and not inv.is_opening:
             issues.append(Issue("Alış: ödənişi tapılmayan qaimə", inv.date, inv.voen, inv.name, inv.yekun,
                                 f"{inv.number} — bu VÖEN-ə bankdan da, depozitdən də ödəniş tapılmadı "
                                 f"(başqa bankdan, kartla və ya nağd ödənilib?). Əvəzləşməyə düşmür.", inv))
@@ -403,8 +433,18 @@ def compute(files: list[SourceFile]) -> Result:
             ds += [f.period[0], min(f.period[1], dt.date.today())]
     rng = (min(ds), max(ds)) if ds else (dt.date.today(), dt.date.today())
     dep_open = next((f.opening for f in files if f.kind == "depozit" and f.opening is not None), 0.0)
+    if openings.get("deposit") is not None:
+        dep_open = float(openings["deposit"])
+    for inv in purchases:
+        if inv.is_opening and any(x.invoice is inv and x.kind == "vat" for x in allocs):
+            issues.append(Issue("Alış: keçən dövr borcuna ödənilən ƏDV", inv.date, inv.voen, inv.name,
+                                sum(x.amount for x in allocs if x.invoice is inv and x.kind == "vat"),
+                                "İlkin qalığa (keçən dövrün qaimələrinə) ödənilən ƏDV. Qaimə nömrəsi bilinmədiyi "
+                                "üçün «Əlavə 1» faylına avtomatik düşmür — lazım olsa e-taxes-da əl ilə əlavə edin.", inv))
     return Result(company_voen, company_name, files, purchases, sales, deposit, bank_rows, allocs,
                   s1 + s2, unalloc, sl1 + sl2, parties, issues, dep_open, rng,
+                  (float(openings["bank"]) if openings.get("bank") is not None
+                   else sum((f.opening or 0) for f in files if f.kind == "bank")), od,
                   base, dict(adv_used), dict(adv_uses), dict(mt_adv))
 
 
