@@ -14,7 +14,7 @@ from .reports import (ALLOC_HEAD, Debts, Detail, Offset, _alloc_row, mkey, mlabe
 
 
 def mshort(m) -> str:
-    return f"{AY_ADLARI[m[1] - 1][:3]}.{m[0]}"
+    return f"{AY_ADLARI[m[1] - 1]} {m[0]}"
 
 
 def _pays_by_date(allocs):

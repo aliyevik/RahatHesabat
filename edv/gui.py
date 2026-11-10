@@ -12,7 +12,8 @@ from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QIcon, QKeySequence
                            QShortcut)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QDialog,
                                QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QScrollArea, QListWidget, QListWidgetItem, QMainWindow,
+                               QHeaderView, QInputDialog, QLabel, QLineEdit, QMenu, QPlainTextEdit,
+                               QScrollArea, QToolButton, QListWidget, QListWidgetItem, QMainWindow,
                                QMessageBox, QPushButton, QStackedWidget, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -24,13 +25,16 @@ from openpyxl import Workbook
 from rahat import theme
 from rahat.export_excel import save_grid_xlsx
 from rahat.export_pdf import resource_path, save_grid_pdf
+from rahat.layout import drop_columns, leaf_headers
 from rahat.gui import QSS, BluePanel, ReportTable, back_button, card, cell_text, parse_amount, pydate, qdate
 from rahat.model import fmt_date, fmt_money
 
-from . import APP_NAME, APP_VERSION, PRESENTED_BY, PRESENTED_URL
-from .engine import compute
-from .store import Store, list_bases
+from . import APP_NAME, APP_VERSION, DEDICATED_TO, PRESENTED_BY, PRESENTED_URL
+from .engine import compute, short_name
+from . import store as store_mod
+from .store import Store, base_dir, check_code, list_bases
 from .parsers import ParseError, load
+from .reports2 import BankOps, PurchaseRegister, SalesRegister, Settlement
 from .reports import (Advances, BankReport, Creditors, Debtors, IssuesReport, Offset, SalesReport, Summary, mlabel,
                       months_between)
 
@@ -92,6 +96,18 @@ class Welcome(QWidget):
         line = QFrame()
         line.setFixedSize(64, 4)
         line.setStyleSheet(f"background:{theme.BLUE}; border-radius:2px;")
+        ded = QFrame()
+        ded.setStyleSheet(f"QFrame{{background:{theme.BLUE_PALE}; border:1px solid {theme.BLUE_LIGHT};"
+                          f"border-left:4px solid {theme.BLUE}; border-radius:6px;}}"
+                          "QLabel{border:none; background:transparent;}")
+        dlay = QVBoxLayout(ded)
+        dlay.setContentsMargins(16, 10, 16, 10)
+        d1 = QLabel("Xüsusi olaraq hazırlanmışdır")
+        d1.setStyleSheet(f"color:{theme.MUTED}; font-size:9.5pt;")
+        d2 = QLabel(f"{DEDICATED_TO} üçün")
+        d2.setStyleSheet(f"color:{theme.NAVY}; font-size:16pt; font-weight:700;")
+        dlay.addWidget(d1)
+        dlay.addWidget(d2)
         feats = QLabel("1.  Faylları atın — e-taxes və bankdan endirdiyiniz Excel-lər, olduğu kimi\n"
                        "2.  VÖEN və ad yoxlanılır, ödənişlər qaimələrə FIFO ilə bağlanır\n"
                        "3.  Hesablanmış və əvəzləşdirilən ƏDV — aylar üzrə\n"
@@ -107,7 +123,9 @@ class Welcome(QWidget):
             ll.addWidget(w)
         ll.addSpacing(10)
         ll.addWidget(line)
-        ll.addSpacing(22)
+        ll.addSpacing(16)
+        ll.addWidget(ded)
+        ll.addSpacing(14)
         ll.addWidget(feats)
         ll.addStretch(1)
         hb = QHBoxLayout()
@@ -152,10 +170,21 @@ class OpeningDialog(QDialog):
         self.resize(1050, 680)
         self.od = od
         lay = QVBoxLayout(self)
-        head = QLabel(f"<b>{comp_name}</b> · VÖEN {comp_voen}<br>"
-                      f"Qalıqlar <b>{fmt_date(self.od)}</b> tarixinə (bazanın başlanğıcından bir gün əvvəl).")
-        head.setWordWrap(True)
+        head = QLabel(f"<b>{comp_name}</b> · VÖEN {comp_voen}")
         lay.addWidget(head)
+        dl = QHBoxLayout()
+        dl.addWidget(QLabel("İlkin qalıqların tarixi:"))
+        self.od_edit = QDateEdit()
+        self.od_edit.setCalendarPopup(True)
+        self.od_edit.setDisplayFormat("dd.MM.yyyy")
+        self.od_edit.setDate(qdate(od))
+        dl.addWidget(self.od_edit)
+        dnote = QLabel("— qalıqlar bu günün sonuna yazılır; baza növbəti gündən başlayır. "
+                       "Yadda saxlandıqdan sonra tarix və məbləğlər kilidlənir, dəyişmək üçün kod tələb olunur.")
+        dnote.setObjectName("muted")
+        dnote.setWordWrap(True)
+        dl.addWidget(dnote, 1)
+        lay.addLayout(dl)
         tip = QLabel("Müsbət məbləğ — borc; mənfi məbləğ — avans (məs. təchizatçıya avans vermişik). Əsas məbləğ "
                      "bankla, ƏDV depozitlə bağlanır. İlkin borclar sonrakı ödənişlərlə ilk növbədə (FIFO) bağlanır. "
                      "Sıfır olan sətirlər nəzərə alınmır.")
@@ -175,6 +204,12 @@ class OpeningDialog(QDialog):
         for w in (self.dep, self.bank):
             w.setAlignment(Qt.AlignRight)
             w.setMaximumWidth(180)
+        self.budget = QLineEdit(fmt_money(data["budget"]) if data.get("budget") is not None else "")
+        self.budget.setPlaceholderText("0,00")
+        self.budget.setAlignment(Qt.AlignRight)
+        self.budget.setMaximumWidth(180)
+        g.addWidget(QLabel("Büdcə ilə ƏDV hesablaşması (borc + / artıq ödəniş −):"), 1, 0, 1, 2)
+        g.addWidget(self.budget, 1, 2)
         g.addWidget(QLabel("ƏDV depozit hesabının qalığı:"), 0, 0)
         g.addWidget(self.dep, 0, 1)
         g.addWidget(QLabel("Bank hesabının qalığı:"), 0, 2)
@@ -261,12 +296,13 @@ class OpeningDialog(QDialog):
                 continue
             rows.append({"voen": v, "name": txt(1).strip(), "side": self.table.cellWidget(r, 2).currentData(),
                          "net": net, "vat": vat})
+        self.od = pydate(self.od_edit.date())
         out = {"date": self.od.isoformat(), "rows": rows}
-        for key, w in (("deposit", self.dep), ("bank", self.bank)):
+        for key, w in (("deposit", self.dep), ("bank", self.bank), ("budget", self.budget)):
             try:
                 out[key] = parse_amount(w.text()) if w.text().strip() else None
             except ValueError:
-                bad.append(f"{'ƏDV depozit' if key == 'deposit' else 'Bank'} qalığı düzgün yazılmayıb")
+                bad.append({"deposit": "ƏDV depozit", "bank": "Bank", "budget": "Büdcə"}[key] + " qalığı düzgün yazılmayıb")
         return out, bad
 
     def accept_if_valid(self):
@@ -376,12 +412,15 @@ class BasePage(QWidget):
         self.start.setCalendarPopup(True)
         self.start.setDisplayFormat("dd.MM.yyyy")
         self.start.setDate(QDate(QDate.currentDate().year(), 1, 1))
-        self.start.dateChanged.connect(self._start_changed)
+        self.start.setReadOnly(True)
+        self.start.setButtonSymbols(QDateEdit.NoButtons)
         g.addWidget(QLabel("Bazanın başlanğıcı:"), 1, 0)
         g.addWidget(self.start, 1, 1)
-        hint = QLabel("adətən ilin 1 yanvarı — qalıqlar bir gün əvvələ yazılır")
-        hint.setObjectName("muted")
-        g.addWidget(hint, 1, 2, 1, 2)
+        self.lock_lbl = QLabel("")
+        g.addWidget(self.lock_lbl, 1, 2)
+        self.hist_btn = QPushButton("Dəyişiklik tarixçəsi")
+        self.hist_btn.clicked.connect(self.show_history)
+        g.addWidget(self.hist_btn, 1, 3, alignment=Qt.AlignLeft)
         self.op_btn = QPushButton("İlkin qalıqları yaz…")
         self.op_btn.clicked.connect(self.edit_openings)
         g.addWidget(self.op_btn, 2, 0)
@@ -392,6 +431,21 @@ class BasePage(QWidget):
         g.setColumnStretch(3, 1)
         l1.addLayout(g)
         root.addWidget(c1)
+
+        # Baza və ehtiyat nüsxə
+        cb, lb = card("Baza və ehtiyat nüsxə (backup)")
+        self.db_info = QLabel("")
+        self.db_info.setWordWrap(True)
+        self.db_info.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lb.addWidget(self.db_info)
+        hbb = QHBoxLayout()
+        for text, fn in (("Backup qovluğunu seç…", self.choose_backup_dir), ("İndi nüsxə çıxar", self.backup_now),
+                         ("Nüsxədən bərpa et…", self.restore_backup), ("Baza qovluğunu aç", self.open_db_dir)):
+            bb = QPushButton(text)
+            bb.clicked.connect(fn)
+            hbb.addWidget(bb)
+        hbb.addStretch(1)
+        lb.addLayout(hbb)
 
         # 2. Fayllar
         c2, l2 = card("2. Faylları bazaya əlavə et")
@@ -459,12 +513,14 @@ class BasePage(QWidget):
         self.pinfo.setWordWrap(True)
         l3.addWidget(self.pinfo)
         root.addWidget(c3)
+        self._backup_card = cb
 
         self.go = QPushButton("Hesabla və hesabatları aç  →")
         self.go.setObjectName("primary")
         self.go.setMinimumHeight(44)
         self.go.clicked.connect(self.run)
         root.addWidget(self.go)
+        root.addWidget(cb)
         root.addStretch(1)
         self.reload_companies()
 
@@ -474,7 +530,7 @@ class BasePage(QWidget):
         self.company.blockSignals(True)
         self.company.clear()
         for v, name in bases:
-            self.company.addItem(f"{name} · VÖEN {v}", v)
+            self.company.addItem(f"{short_name(name)} · VÖEN {v}", v)
         if not bases:
             self.company.addItem("— hələ baza yoxdur: faylları əlavə edin —", "")
         idx = max(0, self.company.findData(select or self.main.settings.data.get("last_company", "")))
@@ -490,10 +546,81 @@ class BasePage(QWidget):
             self.main.settings.save()
         self.refresh()
 
-    def _start_changed(self, *_):
+    # --- baza və backup
+    def update_db_info(self):
+        st = self.store
+        bdir = self.main.settings.data.get("backup_dir") or ""
+        if not st:
+            self.db_info.setText(f"Baza qovluğu: {base_dir()}")
+            return
+        bks = st.list_backups()
+        last = dt.datetime.fromtimestamp(os.path.getmtime(bks[0])).strftime("%d.%m.%Y %H:%M") if bks else "—"
+        self.db_info.setText(
+            f"Baza faylı: <b>{st.path}</b><br>Avtomatik backup (hər dəyişiklikdə, son 40 nüsxə): "
+            f"{os.path.join(base_dir(), 'backup', st.voen)}"
+            + (f"<br>Əlavə backup qovluğu: <b>{bdir}</b>" if bdir else
+               "<br><span style='color:#A33A3A'>Əlavə backup qovluğu seçilməyib — D:\\, flash və ya OneDrive "
+               "qovluğu seçməyiniz tövsiyə olunur.</span>")
+            + f"<br>Son nüsxə: {last} · cəmi {len(bks)} nüsxə")
+
+    def choose_backup_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "Əlavə backup qovluğu (məs. D:\\, flash, OneDrive)",
+                                             self.main.settings.data.get("backup_dir") or os.path.expanduser("~"))
+        if not d:
+            return
+        self.main.settings.data["backup_dir"] = d
+        self.main.settings.save()
+        store_mod.EXTRA_BACKUP_DIR = d
         if self.store:
-            self.store.start = pydate(self.start.date())
-            self.refresh()
+            self.store.backup("qovluq_secildi")
+        self.update_db_info()
+
+    def backup_now(self):
+        if not self.store:
+            return
+        made = self.store.backup("el_ile")
+        QMessageBox.information(self, "Backup", "Nüsxə çıxarıldı:\n" + "\n".join(made))
+        self.update_db_info()
+
+    def restore_backup(self):
+        if not self.store:
+            return
+        bks = self.store.list_backups()
+        if not bks:
+            QMessageBox.information(self, "Backup", "Nüsxə tapılmadı.")
+            return
+        items = [f"{dt.datetime.fromtimestamp(os.path.getmtime(p)).strftime('%d.%m.%Y %H:%M:%S')}  ·  {p}" for p in bks]
+        item, ok = QInputDialog.getItem(self, "Nüsxədən bərpa", "Hansı nüsxə bərpa edilsin? "
+                                        "(cari baza əvvəlcə ayrıca nüsxəyə yazılacaq)", items, 0, False)
+        if not ok:
+            return
+        p = bks[items.index(item)]
+        if QMessageBox.question(self, "Bərpa", f"Baza bu nüsxə ilə əvəz olunsun?\n{p}") != QMessageBox.Yes:
+            return
+        try:
+            self.store.restore(p)
+        except Exception as ex:  # noqa
+            QMessageBox.warning(self, "Bərpa olunmadı", str(ex))
+            return
+        self.refresh()
+        QMessageBox.information(self, "Bərpa", "Baza bərpa olundu.")
+
+    def open_db_dir(self):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(base_dir()))
+
+    def show_history(self):
+        if not self.store:
+            return
+        h = self.store.data.get("openings_history", [])
+        txt = "\n\n".join(f"{x['at']} — {x['action']}\n{x['detail']}" for x in reversed(h)) or "Hələ dəyişiklik yoxdur."
+        dlg = QDialog(self)
+        dlg.setWindowTitle("İlkin qalıqlar — dəyişiklik tarixçəsi")
+        dlg.resize(820, 480)
+        lay = QVBoxLayout(dlg)
+        te = QPlainTextEdit(txt)
+        te.setReadOnly(True)
+        lay.addWidget(te)
+        dlg.exec()
 
     # --- fayllar
     def pick(self):
@@ -565,19 +692,23 @@ class BasePage(QWidget):
     def refresh(self, set_period=False):
         st = self.store
         has = bool(st)
-        for w in (self.op_btn, self.del_btn, self.go, self.start, self.month):
+        for w in (self.op_btn, self.del_btn, self.go, self.start, self.month, self.hist_btn):
             w.setEnabled(has)
         if not has:
+            self.update_db_info()
+            self.lock_lbl.setText("")
             self.stats.setText("")
             self.op_info.setText("")
             self.cov.setColumnCount(0)
             self.hist.setRowCount(0)
             self.month.clear()
             return
-        self.start.blockSignals(True)
         if st.start:
             self.start.setDate(qdate(st.start))
-        self.start.blockSignals(False)
+        self.lock_lbl.setText("🔒 <b>kilidlidir</b> — dəyişmək üçün kod tələb olunur" if st.locked else
+                              "<span style='color:#A33A3A'>ilkin qalıqlar hələ yazılmayıb</span>")
+        self.op_btn.setText("İlkin qalıqlara bax / dəyiş (kodla)…" if st.locked else "İlkin qalıqları yaz…")
+        self.update_db_info()
         c = st.counts()
         self.stats.setText(" · ".join(f"{KIND_NAMES[k]}: {c[k]}" for k in Store.KINDS))
         cov = st.coverage()
@@ -652,6 +783,8 @@ class BasePage(QWidget):
             parts.append(f"ƏDV depozit: {fmt_money(o['deposit'])}")
         if o.get("bank") is not None:
             parts.append(f"bank: {fmt_money(o['bank'])}")
+        if o.get("budget") is not None:
+            parts.append(f"büdcə ilə ƏDV: {fmt_money(o['budget'])}")
         if not rows:
             parts.append("<span style='color:#A33A3A'>hələ yazılmayıb</span>")
         self.op_info.setText(" · ".join(parts))
@@ -659,12 +792,23 @@ class BasePage(QWidget):
     def edit_openings(self):
         if not self.store:
             return
-        od = (self.store.start or dt.date.today()) - dt.timedelta(days=1)
+        if self.store.locked:
+            code, ok = QInputDialog.getText(self, "Təsdiq kodu", "İlkin qalıqlar kilidlidir.\n"
+                                            "Dəyişmək üçün təsdiq kodunu daxil edin:", QLineEdit.Password)
+            if not ok:
+                return
+            if not check_code(code):
+                self.store.log("Uğursuz cəhd", "yanlış təsdiq kodu")
+                self.store.save()
+                QMessageBox.warning(self, "Kod yanlışdır", "Təsdiq kodu yanlışdır. İlkin qalıqlar dəyişdirilmədi.")
+                return
+        od = (self.store.start or dt.date(dt.date.today().year, 1, 1)) - dt.timedelta(days=1)
         dlg = OpeningDialog(self, self.store.source_files(), self.store.data.get("openings") or {}, od,
                             self.store.voen, self.store.name)
         if dlg.exec() == QDialog.Accepted and dlg.result_data is not None:
-            self.store.set_openings(dlg.result_data)
-            self.update_op_info()
+            od = dt.date.fromisoformat(dlg.result_data["date"])
+            self.store.set_openings(dlg.result_data, od + dt.timedelta(days=1))
+            self.refresh()
 
     # --- dövr
     def _set_month(self, m):
@@ -775,6 +919,29 @@ class GridPage(QWidget):
         for w in (z_out, z_in, self.z_fit, self.paper, pdf, xls):
             bar.addWidget(w)
         rl.addLayout(bar)
+        # filtr, axtarış və sütunlar sətri
+        self.fbar = QHBoxLayout()
+        self.fbar.setSpacing(8)
+        self.filter_box = QHBoxLayout()
+        self.filter_box.setSpacing(8)
+        self.fbar.addLayout(self.filter_box)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("🔍  Axtarış: ad, VÖEN, qaimə nömrəsi, təyinat…")
+        self.search.setClearButtonEnabled(True)
+        self.search.setMinimumWidth(320)
+        self.search.textChanged.connect(lambda _: self.apply_search())
+        self.search.setVisible(bool(getattr(cls, "searchable", False)))
+        self.fbar.addWidget(self.search)
+        self.fbar.addStretch(1)
+        self.cols_btn = QToolButton()
+        self.cols_btn.setText("Sütunlar ▾")
+        self.cols_btn.setToolTip("Lazım olmayan sütunları söndürün (ekranda və PDF/Excel-də)")
+        self.cols_btn.setPopupMode(QToolButton.InstantPopup)
+        self.cols_menu = QMenu(self)
+        self.cols_btn.setMenu(self.cols_menu)
+        self.cols_menu.aboutToShow.connect(self._fill_cols_menu)
+        self.fbar.addWidget(self.cols_btn)
+        rl.addLayout(self.fbar)
         self.table = ReportTable(self.show_detail, None, self.zoom)
         rl.addWidget(self.table, 1)
         self.views.addWidget(rep)
@@ -817,6 +984,101 @@ class GridPage(QWidget):
         today = fmt_date(dt.date.today())
         return [s.replace("{tarix}", today) for s in self.main.settings.data["signature"] if s.strip()]
 
+    # --- sütunlar
+    def _hidden_labels(self) -> set:
+        return set(self.main.settings.data.setdefault("hidden_cols", {}).get(self.title, []))
+
+    def hidden_idx(self) -> set:
+        if not self.grid:
+            return set()
+        hl = self._hidden_labels()
+        return {i for i, lab in enumerate(leaf_headers(self.grid)) if lab in hl and i > 0}
+
+    def _fill_cols_menu(self):
+        self.cols_menu.clear()
+        if not self.grid:
+            return
+        hl = self._hidden_labels()
+        labels = leaf_headers(self.grid)
+        for i, lab in enumerate(labels):
+            if i == 0:
+                continue
+            act = self.cols_menu.addAction(lab)
+            act.setCheckable(True)
+            act.setChecked(lab not in hl)
+            act.toggled.connect(lambda on, lab=lab: self._toggle_col(lab, on))
+        self.cols_menu.addSeparator()
+        self.cols_menu.addAction("Hamısını göstər", lambda: self._set_hidden(set()))
+
+    def _toggle_col(self, lab, on):
+        hl = self._hidden_labels()
+        (hl.discard if on else hl.add)(lab)
+        self._set_hidden(hl)
+
+    def _set_hidden(self, hl):
+        self.main.settings.data.setdefault("hidden_cols", {})[self.title] = sorted(hl)
+        self.main.settings.save()
+        self.apply_columns()
+
+    def apply_columns(self):
+        if not self.grid:
+            return
+        hid = self.hidden_idx()
+        for c in range(self.table.columnCount()):
+            self.table.setColumnHidden(c, c in hid)
+        n_h = len(hid)
+        self.cols_btn.setText(f"Sütunlar ▾ ({n_h} gizli)" if n_h else "Sütunlar ▾")
+
+    # --- axtarış
+    def apply_search(self):
+        if not self.grid:
+            return
+        q = self.search.text().strip().lower()
+        start = len(self.grid.head_rows)
+        for r in range(start, self.table.rowCount()):
+            cells = self.grid.rows[r - start]
+            is_total = cells and cells[0] is not None and cells[0].style in ("total", "section")
+            if not q or is_total:
+                self.table.setRowHidden(r, False)
+                continue
+            txt = " ".join(str(c.value) for c in cells if c is not None and c.value is not None).lower()
+            self.table.setRowHidden(r, q not in txt)
+
+    # --- filtrlər
+    def build_filters(self):
+        while self.filter_box.count():
+            w = self.filter_box.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        if not hasattr(self.rep, "filter_spec"):
+            return
+        self.rep.filters = getattr(self, "_filters", {}) or {}
+        for key, label, options in self.rep.filter_spec():
+            lab = QLabel(label + ":")
+            lab.setObjectName("muted")
+            cb = QComboBox()
+            for text, val in options:
+                cb.addItem(text, val)
+            cur = self.rep.filters.get(key)
+            i = cb.findData(cur) if cur is not None else 0
+            cb.setCurrentIndex(max(0, i))
+            cb.setMaximumWidth(260)
+            cb.currentIndexChanged.connect(lambda _i, k=key, c=cb: self._filter_changed(k, c.currentData()))
+            self.filter_box.addWidget(lab)
+            self.filter_box.addWidget(cb)
+
+    def _filter_changed(self, key, val):
+        self._filters = dict(getattr(self, "_filters", {}) or {})
+        self._filters[key] = val
+        self.rep.filters = self._filters
+        self.grid = self.rep.grid(self.signature())
+        self._update_info()
+        self.render()
+
+    def _update_info(self):
+        self.info.setText(" · ".join(f"{k} <b>{fmt_money(v) if isinstance(v, (int, float)) else v}</b>"
+                                     for k, v in self.grid.top_lines))
+
     def _monthly_toggled(self, on):
         if self.rep is None:
             return
@@ -829,9 +1091,10 @@ class GridPage(QWidget):
         self.rep = self.cls(R, a, b)
         if hasattr(self.rep, "monthly"):
             self.rep.monthly = self.monthly.isChecked()
+        self._filters = {}
+        self.build_filters()
         self.grid = self.rep.grid(self.signature())
-        self.info.setText(" · ".join(f"{k} <b>{fmt_money(v) if isinstance(v, (int, float)) else v}</b>"
-                                     for k, v in self.grid.top_lines))
+        self._update_info()
         self.views.setCurrentIndex(0)
         QTimer.singleShot(0, self.render)
 
@@ -843,6 +1106,8 @@ class GridPage(QWidget):
             self.table.fit_to_width()
         else:
             self.table.apply_zoom(self.user_pt)
+        self.apply_columns()
+        self.apply_search()
 
     def zoom(self, d):
         self.user_pt = max(6.0, min(16.0, (self.table.pt if not self.z_fit.isChecked() else self.user_pt) + d))
@@ -923,10 +1188,11 @@ class GridPage(QWidget):
             return
         footer = f"{APP_NAME} — təqdim edir: {PRESENTED_BY} ({PRESENTED_URL})"
         try:
+            grid = drop_columns(self.grid, self.hidden_idx())
             if kind == "pdf":
-                save_grid_pdf(self.grid, p, paper=["auto", "A4", "A3"][self.paper.currentIndex()], footer_text=footer)
+                save_grid_pdf(grid, p, paper=["auto", "A4", "A3"][self.paper.currentIndex()], footer_text=footer)
             else:
-                save_grid_xlsx(self.grid, p, sheet_title=self.sheet, footer_text=footer)
+                save_grid_xlsx(grid, p, sheet_title=self.sheet, footer_text=footer)
         except PermissionError:
             QMessageBox.warning(self, "Yazmaq mümkün olmadı", "Fayl başqa proqramda açıqdır. Bağlayıb yenidən cəhd edin.")
             return
@@ -1025,13 +1291,15 @@ def export_appendix(page: GridPage):
 class Main(QMainWindow):
     PAGES = [
         ("🗄   Məlumat bazası", None),
-        ("🧾   ƏDV yekunu", (Summary, "ƏDV yekunu", "ƏDV yekunu", None)),
-        ("🔁   Əvəzləşmə (alış)", (Offset, "Əvəzləşmə", "Əvəzləşmə",
-                               [("e-taxes «Əlavə 1» faylı", export_appendix)])),
-        ("💰   Satış və hesablanmış ƏDV", (SalesReport, "Satış və hesablanmış ƏDV", "Satış", None)),
-        ("🏦   Bank hesabatı", (BankReport, "Bank hesabatı", "Bank", None)),
-        ("📕   Kreditor borclar (təchizatçılar)", (Creditors, "Kreditor borclar", "Kreditor", None)),
-        ("📗   Debitor borclar (alıcılar)", (Debtors, "Debitor borclar", "Debitor", None)),
+        ("🧮   ƏDV hesablaşması", (Settlement, "ƏDV hesablaşması", "Hesablaşma", None)),
+        ("📤   Təqdim edilən e-qaimə (satış)", (SalesRegister, "Təqdim edilən e-qaimə", "Təqdim edilən e-qaimə", None)),
+        ("📥   Gələn qaimə, Əvəzləşmə (alış)", (PurchaseRegister, "Gələn qaimə, Əvəzləşmə", "Gələn qaimə",
+                                           [("e-taxes «Əlavə 1» faylı", export_appendix)])),
+        ("🏦   Bank əməliyyatları", (BankOps, "Bank əməliyyatları", "Bank əməliyyatları", None)),
+        ("📊   Bank xülasəsi", (BankReport, "Bank xülasəsi", "Bank", None)),
+        ("📗   Debitor borclar (alıcılar)", (SalesReport, "Debitor borclar (alıcılar)", "Debitor", None)),
+        ("📕   Kreditor borclar (təchizatçılar)", (Creditors, "Kreditor borclar (təchizatçılar)", "Kreditor", None)),
+        ("🧾   ƏDV yekunu (ətraflı)", (Summary, "ƏDV yekunu (ətraflı)", "ƏDV yekunu", None)),
         ("🅰   Avans qaimələri", (Advances, "Avans qaimələri", "Avanslar", None)),
         ("⚠   Yoxlanılmalı", (IssuesReport, "Yoxlanılmalı məqamlar", "Yoxlanılmalı", None)),
     ]
@@ -1039,6 +1307,7 @@ class Main(QMainWindow):
     def __init__(self):
         super().__init__()
         self.settings = Settings()
+        store_mod.EXTRA_BACKUP_DIR = self.settings.data.get("backup_dir") or ""
         self.R = None
         self.setWindowTitle(f"{APP_NAME} — təqdim edir {PRESENTED_BY}")
         self.setWindowIcon(app_icon())
@@ -1059,7 +1328,8 @@ class Main(QMainWindow):
         th.addSpacing(20)
         th.addWidget(self.comp)
         th.addStretch(1)
-        th.addWidget(QLabel(f"<span style='color:#9FBDE6'>təqdim edir </span><b>{PRESENTED_BY}</b>"
+        th.addWidget(QLabel(f"<span style='color:#DCE8F7'>{DEDICATED_TO} üçün</span>"
+                            f"<span style='color:#9FBDE6'>   |   təqdim edir </span><b>{PRESENTED_BY}</b>"
                             f" <span style='color:#DCE8F7'>· {PRESENTED_URL}</span>"))
         v.addWidget(top)
         h = QHBoxLayout()

@@ -581,11 +581,12 @@ class Debts:
             groups.append(("Hesablanmış ƏDV", ["əsas × 18%"]))
         groups += [("Son qalıq — borc", ["Əsas", "ƏDV"]),
                    ("18% yoxlaması", ["Əsas × 18%", "Fərq", "Nəticə"]),
-                   ("Cəmi borc", ["Əsas + ƏDV"])]
+                   ("Cəmi borc", ["Əsas + ƏDV"]),
+                   ("Ödəniş tarixləri", ["dövr üzrə"])]
         nc = 3 + sum(len(s) for _, s in groups)
         widths = [3.4, 1.1, 1.3]
         for _, subs in groups:
-            widths += [2.6 if s == "Nəticə" else 1.1 for s in subs]
+            widths += [2.6 if s == "Nəticə" else 2.2 if s == "dövr üzrə" else 1.1 for s in subs]
         g = Grid(title=f"{self.R.company_name} · VÖEN {self.R.company_voen}",
                  subtitle=f"{fmt_date(self.a)} – {fmt_date(self.b)} · " +
                           ("Satış: göndərilən, daxil olan, hesablanmış ƏDV və qalıq" if with_hes else self._title()),
@@ -614,10 +615,15 @@ class Debts:
                 row.append(n(s[k], RESULT if k == "hes" else ITEM, ("party", v)))
             row.append(t(note, RESULT if "⚠" in note else ITEM))
             row.append(n(s["n1"] + s["v1"], RESULT, ("party", v)))
+            pdts = sorted({e[0] for e in ev if self.a <= e[0] <= self.b and (e[5] or e[6])})
+            ptxt = ", ".join(fmt_date(d) for d in pdts[-4:])
+            if len(pdts) > 4:
+                ptxt = f"… {ptxt} ({len(pdts)} ödəniş)"
+            row.append(t(ptxt or "—", ITEM, "center"))
             g.rows.append(row)
         g.rows.append([t("CƏMİ", TOTAL, colspan=3), None, None] + [n(tot[k], TOTAL) for k in keys] +
                       [t(f"{bad} kontragentdə uyğunsuzluq" if bad else "✓", TOTAL)] +
-                      [n(tot["n1"] + tot["v1"], TOTAL)])
+                      [n(tot["n1"] + tot["v1"], TOTAL), t("", TOTAL)])
         g.top_lines = [("Son borc — əsas məbləğ:", round(tot["n1"], 2)), ("Son borc — ƏDV:", round(tot["v1"], 2)),
                        ("Cəmi borc:", round(tot["n1"] + tot["v1"], 2))]
         if with_hes:

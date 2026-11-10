@@ -8,10 +8,27 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import glob
+import hashlib
 import json
 import os
+import shutil
 
 from .parsers import BankOp, DepositOp, Invoice, SourceFile
+
+
+# İlkin qalıqların dəyişdirilməsi üçün təsdiq kodu (yalnız heşi saxlanılır)
+_CODE_SALT = "a940cde8e3128781a390ebf3024f288f"
+_CODE_HASH = "ad5a17f5b6980e9eb309bd2edd01e9bb291070c03a451a44ea4fad1726a545a5"
+
+# Əlavə ehtiyat nüsxə qovluğu (istifadəçi seçir: D:\, flash, OneDrive ...)
+EXTRA_BACKUP_DIR = ""
+KEEP_BACKUPS = 40
+
+
+def check_code(code: str) -> bool:
+    h = hashlib.pbkdf2_hmac("sha256", (code or "").strip().encode("utf-8"), bytes.fromhex(_CODE_SALT), 200000)
+    return h.hex() == _CODE_HASH
 
 
 def base_dir() -> str:
@@ -94,6 +111,8 @@ class Store:
 
     @start.setter
     def start(self, d: dt.date):
+        if self.locked:
+            raise PermissionError("İlkin qalıqlar kilidlidir")
         self.data["start"] = d.isoformat()
         self.save()
 
@@ -101,7 +120,58 @@ class Store:
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self.data, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, self.path)
+        self.backup()
+
+    # ---- ehtiyat nüsxələr
+    def backup_dirs(self) -> list[str]:
+        dirs = [os.path.join(base_dir(), "backup", self.voen)]
+        if EXTRA_BACKUP_DIR:
+            dirs.append(os.path.join(EXTRA_BACKUP_DIR, "EDV_baza_backup", self.voen))
+        return dirs
+
+    def backup(self, note: str = "") -> list[str]:
+        """Hər yadda saxlamada bazanın nüsxəsi: kompüterdə və seçilmiş qovluqda (son 40 nüsxə)."""
+        made = []
+        stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        for d in self.backup_dirs():
+            try:
+                os.makedirs(d, exist_ok=True)
+                dst = os.path.join(d, f"{self.voen}_{stamp}{('_' + note) if note else ''}.json")
+                shutil.copy2(self.path, dst)
+                made.append(dst)
+                old = sorted(glob.glob(os.path.join(d, f"{self.voen}_*.json")))
+                for x in old[:-KEEP_BACKUPS]:
+                    os.remove(x)
+            except OSError:
+                continue
+        return made
+
+    def list_backups(self) -> list[str]:
+        out = []
+        for d in self.backup_dirs():
+            out += glob.glob(os.path.join(d, f"{self.voen}_*.json"))
+        return sorted(out, key=os.path.getmtime, reverse=True)
+
+    def restore(self, path: str):
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("company_voen") != self.voen:
+            raise ValueError("Bu nüsxə başqa şirkətə aiddir.")
+        self.backup("berpadan_evvel")
+        self.data = data
+        self.save()
+
+    # ---- ilkin qalıqların kilidi
+    @property
+    def locked(self) -> bool:
+        return bool(self.data.get("openings_locked"))
+
+    def log(self, action: str, detail: str = ""):
+        self.data.setdefault("openings_history", []).append(
+            {"at": dt.datetime.now().strftime("%d.%m.%Y %H:%M:%S"), "action": action, "detail": detail})
 
     def delete(self):
         if os.path.exists(self.path):
@@ -185,6 +255,20 @@ class Store:
             o["start"] = self.start.isoformat()
         return o
 
-    def set_openings(self, o: dict):
+    def set_openings(self, o: dict, start: dt.date | None = None):
+        old = self.data.get("openings") or {}
+        old_start = self.data.get("start")
+
+        def summ(d, st):
+            rows = d.get("rows", [])
+            return (f"başlanğıc {st}; {len(rows)} kontragent; əsas {sum(r['net'] for r in rows):.2f}; "
+                    f"ƏDV {sum(r['vat'] for r in rows):.2f}; depozit {d.get('deposit')}; bank {d.get('bank')}; "
+                    f"büdcə {d.get('budget')}")
+        if start:
+            self.data["start"] = start.isoformat()
         self.data["openings"] = o
+        first = not self.locked
+        self.data["openings_locked"] = True
+        self.log("İlkin qalıqlar yazıldı" if first else "İlkin qalıqlar dəyişdirildi (kodla)",
+                 (summ(old, old_start) + "  →  " if not first else "") + summ(o, self.data.get("start")))
         self.save()

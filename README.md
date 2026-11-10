@@ -32,7 +32,7 @@ python main.py
 
 ---
 
-# ƏDV Hesabatı (təqdim edir FMC)
+# ƏDV Hesabatı (İntiqam Əliyev üçün — təqdim edir FMC)
 
 Ayrıca proqram (`EDV_Hesabati.exe`, kodu `edv/` qovluğunda). e-taxes-dan alınan alış və satış
 qaimələri, ƏDV depozit çıxarışı və Kapital Bank çıxarışı olduğu kimi yüklənir; şirkət VÖEN-i fayllardan
@@ -47,3 +47,20 @@ oxunur və bütün faylların eyni şirkətə aid olduğu yoxlanılır.
   depozit → ƏDV). e-taxes «Əlavə 1» yükləmə faylı (308 | seriya | nömrə | ödənilmiş məbləğ).
 * **Satış**, **Bank hesabatı**, **Kontragentlər** (üzləşmə aktı ilə), **Yoxlanılmalı** — aydın olmayan
   hər əməliyyat ayrıca qrupda.
+
+### Baza, backup və kilid
+* Baza interfeysdən ayrıdır: `%APPDATA%\EDVHesabati\baza\<VÖEN>.json`. Hər dəyişiklikdə avtomatik nüsxə
+  `baza\backup\<VÖEN>\` qovluğuna və istifadəçinin seçdiyi əlavə qovluğa (D:\, flash, OneDrive) yazılır
+  (son 40 nüsxə). «Nüsxədən bərpa et» ilə istənilən nüsxəyə qayıtmaq olur.
+* İlkin qalıqlar (tarixi və məbləğləri) yadda saxlandıqdan sonra kilidlənir; dəyişmək üçün təsdiq kodu
+  tələb olunur (kod proqramda yalnız heş şəklində saxlanılır). Bütün dəyişikliklər və uğursuz cəhdlər
+  tarixçədə qalır.
+
+### Hesabatlar (sifarişçinin Excel formasına uyğun)
+* **ƏDV hesablaşması** — daxil olmuş məbləğ (pul nə vaxt gəlibsə həmin ay; ƏDV depozitə gələn ƏDV bankdakı
+  puldan çoxdursa baza ƏDV÷18%), hesablanmış ƏDV, əvəzləşmə, büdcəyə ödənilməli/qaytarılan, ödənilmiş ƏDV,
+  əvvəlki dövrdən qalan və növbəti dövrə keçən qalıq.
+* **Təqdim edilən e-qaimə** — vergitutma ayı, Bank-1/ƏDV-1/Tarix, Bank-2/ƏDV-2/Tarix, debitor qalığı.
+* **Gələn qaimə, Əvəzləşmə** — yol vergisi, azad/0%, ödənişlər, kreditor qalığı, əvəzləşmə dövrü, «Əlavə 1».
+* **Bank əməliyyatları** — ay, növ, qarşı tərəf, kateqoriya filtrləri, axtarış, aid olduğu qaimə (tam/qismən).
+* Hər hesabatda «Sütunlar» menyusu: lazımsız sütunları söndürmək (ekranda və PDF/Excel-də).

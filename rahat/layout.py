@@ -262,3 +262,44 @@ def debt_grid_stacked(r: DebtReport, signature: list[str]) -> Grid:
                      (r.col_sum("op_h") + r.col_sum("h"), r.col_sum("op_o") + r.col_sum("o"),
                       r.col_sum("closing")), (None, None), TOTAL)
     return g
+
+
+def drop_columns(grid: Grid, hidden: set) -> Grid:
+    """Gizlədilmiş sütunları cədvəldən çıxarır (birləşmiş xanaları düzgün daraldır)."""
+    if not hidden:
+        return grid
+    keep = [c for c in range(grid.ncols) if c not in hidden]
+    pos = {c: i for i, c in enumerate(keep)}
+
+    def conv(rows):
+        out = []
+        for cells in rows:
+            new = [None] * len(keep)
+            for ci, cell in enumerate(cells):
+                if cell is None:
+                    continue
+                vis = [c for c in range(ci, ci + cell.colspan) if c in pos]
+                if not vis:
+                    continue
+                c2 = Cell(cell.value, cell.style, len(vis), cell.rowspan, cell.align, cell.ref, cell.drag)
+                new[pos[vis[0]]] = c2
+            out.append(new)
+        return out
+
+    g = Grid(grid.title, grid.subtitle, len(keep), conv(grid.head_rows), conv(grid.rows),
+             [grid.col_widths[c] for c in keep], grid.top_lines, grid.signature, grid.footnote, grid.stacked)
+    return g
+
+
+def leaf_headers(grid: Grid) -> list[str]:
+    """Hər sütun üçün başlıq mətni («Qrup › Alt başlıq»)."""
+    names = [""] * grid.ncols
+    for cells in grid.head_rows:
+        for ci, cell in enumerate(cells):
+            if cell is None or not cell.value:
+                continue
+            for c in range(ci, ci + cell.colspan):
+                txt = str(cell.value).replace("\n", " ")
+                names[c] = (names[c] + " › " + txt) if names[c] and cell.colspan == 1 else (names[c] or txt) \
+                    if cell.colspan > 1 else txt if not names[c] else names[c] + " › " + txt
+    return [x or f"Sütun {i + 1}" for i, x in enumerate(names)]
