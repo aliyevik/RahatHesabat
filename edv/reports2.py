@@ -50,12 +50,12 @@ class SalesRegister:
 
     def grid(self, signature):
         heads = [("Kontragent", ["№", "Vergitutma ayı", "VÖEN", "Alıcı"]),
-                 ("E-QAİMƏ", ["Tarix", "Seriya", "Nömrə", "Ümumi məbləğ (ƏDV daxil)", "ƏDV 18%",
+                 ("E-QAİMƏ", ["Tarix", "Göndərilmə ayı", "Seriya", "Nömrə", "Ümumi məbləğ (ƏDV daxil)", "ƏDV 18%",
                               "Məbləğ ƏDV xaric", "Məbləğ 0% / azad"]),
                  ("Ödənişlər", ["Bank-1", "ƏDV-1", "Tarix-1", "Bank-2", "ƏDV-2", "Tarix-2", "Digər ödənişlər"]),
                  ("Qalıq", ["Debitor borc — əsas (ƏDV xaric)", "Debitor borc — ƏDV"])]
         nc = sum(len(s) for _, s in heads)
-        widths = [0.5, 1.2, 1.1, 3.0, 1.0, 0.9, 1.0, 1.2, 1.0, 1.15, 1.0] + [1.0, 0.9, 1.0] * 2 + [1.1, 1.2, 1.1]
+        widths = [0.5, 1.2, 1.1, 3.0, 1.0, 1.2, 0.9, 1.0, 1.2, 1.0, 1.15, 1.0] + [1.0, 0.9, 1.0] * 2 + [1.1, 1.2, 1.1]
         g = Grid(title=f"{self.R.company_name} · VÖEN {self.R.company_voen}",
                  subtitle=f"{fmt_date(self.a)} – {fmt_date(self.b)} · Təqdim edilən e-qaimələr (satış)",
                  ncols=nc, col_widths=widths, signature=signature)
@@ -80,7 +80,7 @@ class SalesRegister:
             vals = [yekun, vat_b, net_b, zero]
             row = [t(str(k), ITEM, "center"), t(", ".join(mshort(m) for m in months) or "—", ITEM, "center"),
                    t(i.voen, ITEM, "center"), t(i.name), t(fmt_date(i.date), ITEM, "center"),
-                   t(i.seria, ITEM, "center"), t(i.nomre, ITEM, "center")]
+                   t(mshort(mkey(i.date)), ITEM, "center"), t(i.seria, ITEM, "center"), t(i.nomre, ITEM, "center")]
             row += [n(x, ref=ref) for x in vals]
             for p in (p1, p2):
                 row += ([n(p[1], ref=ref), n(p[2], ref=ref), t(fmt_date(p[0]), ITEM, "center")] if p else
@@ -92,7 +92,7 @@ class SalesRegister:
                               vals + [p1[1] if p1 else 0, p1[2] if p1 else 0, p2[1] if p2 else 0,
                                       p2[2] if p2 else 0, rest, deb_n, deb_v]):
                 tot[key] += x
-        g.rows.append([t("CƏMİ", TOTAL, colspan=7)] + [None] * 6 +
+        g.rows.append([t("CƏMİ", TOTAL, colspan=8)] + [None] * 7 +
                       [n(tot[k], TOTAL) for k in ("yekun", "vat", "net", "zero")] +
                       [n(tot["b1"], TOTAL), n(tot["v1"], TOTAL), t("", TOTAL),
                        n(tot["b2"], TOTAL), n(tot["v2"], TOTAL), t("", TOTAL),

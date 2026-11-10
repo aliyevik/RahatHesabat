@@ -8,7 +8,7 @@ import sys
 import traceback
 
 from PySide6.QtCore import QDate, Qt, QTimer, QUrl
-from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QIcon, QKeySequence, QPalette,
+from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QFontMetrics, QIcon, QKeySequence, QPalette,
                            QShortcut)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QDialog,
                                QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
@@ -421,15 +421,16 @@ class CompanyPicker(QDialog):
 
     def __init__(self, parent=None, current=""):
         super().__init__(parent)
-        self.setWindowTitle(f"{APP_NAME} — şirkət seçimi")
+        self.setWindowTitle(f"{APP_NAME} {APP_VERSION} — istifadəçi (şirkət) seçimi")
         self.setWindowIcon(app_icon())
         self.resize(700, 440)
         self.chosen = None
         lay = QVBoxLayout(self)
-        t = QLabel("Şirkət (baza) seçin")
+        t = QLabel("İstifadəçi (şirkət) və baza seçin")
         t.setObjectName("pageTitle")
         lay.addWidget(t)
-        s = QLabel("Hər şirkətin məlumatı ayrıca bazada saxlanılır. İşləyəcəyiniz şirkəti seçin və ya yenisini yaradın.")
+        s = QLabel("Hər istifadəçinin (şirkətin, məs. İNFLOR, Rahat Yaşam) məlumatı ayrıca bazada saxlanılır. "
+                   "Kimin bazası ilə işləyəcəyinizi seçin və ya «Yeni istifadəçi (baza) yarat» ilə yenisini yaradın.")
         s.setObjectName("muted")
         s.setWordWrap(True)
         lay.addWidget(s)
@@ -437,7 +438,7 @@ class CompanyPicker(QDialog):
         self.lst.itemDoubleClicked.connect(lambda _: self.open())
         lay.addWidget(self.lst, 1)
         hb = QHBoxLayout()
-        b_new = QPushButton("＋ Yeni şirkət (baza) yarat")
+        b_new = QPushButton("＋ Yeni istifadəçi (şirkət bazası) yarat")
         b_new.clicked.connect(self.create)
         b_open = QPushButton("Aç  →")
         b_open.setObjectName("primary")
@@ -1215,10 +1216,33 @@ class GridPage(QWidget):
             self.col_filters.pop(lab, None)
         else:
             self.col_filters[lab] = chosen
+        self.mark_headers()
         self.apply_search()
+
+    def mark_headers(self):
+        """Hər sütun başlığında ▼ (filtr) işarəsi; filtr qoyulubsa ●."""
+        if not self.grid:
+            return
+        labels = leaf_headers(self.grid)
+        nh = len(self.grid.head_rows)
+        for ri, cells in enumerate(self.grid.head_rows):
+            for ci, cell in enumerate(cells):
+                if cell is None or cell.colspan != 1 or ri + cell.rowspan < nh:
+                    continue
+                it = self.table.item(ri, ci)
+                if it is None:
+                    continue
+                base_txt = "" if cell.value is None else str(cell.value)
+                mark = "  ▼●" if labels[ci] in self.col_filters else "  ▼"
+                it.setText(base_txt + mark)
+                it.setToolTip("Bu sütun üzrə filtr üçün basın")
+                need = QFontMetrics(it.font()).horizontalAdvance(it.text()) + 12
+                if self.table.columnWidth(ci) < need and not self.z_fit.isChecked():
+                    self.table.setColumnWidth(ci, min(need, 320))
 
     def clear_col_filters(self):
         self.col_filters = {}
+        self.mark_headers()
         self.apply_search()
 
     def visible_rows(self):
@@ -1318,6 +1342,7 @@ class GridPage(QWidget):
         else:
             self.table.apply_zoom(self.user_pt)
         self.apply_columns()
+        self.mark_headers()
         self.apply_search()
 
     def zoom(self, d):
@@ -1525,7 +1550,7 @@ class Main(QMainWindow):
         self.settings = Settings()
         store_mod.EXTRA_BACKUP_DIR = self.settings.data.get("backup_dir") or ""
         self.R = None
-        self.setWindowTitle(f"{APP_NAME} — təqdim edir {PRESENTED_BY}")
+        self.setWindowTitle(f"{APP_NAME} {APP_VERSION} — {DEDICATED_TO} üçün — təqdim edir {PRESENTED_BY}")
         self.setWindowIcon(app_icon())
         self.resize(1400, 860)
         cw = QWidget()
@@ -1539,7 +1564,8 @@ class Main(QMainWindow):
         top.setFixedHeight(58)
         th = QHBoxLayout(top)
         th.setContentsMargins(22, 0, 22, 0)
-        th.addWidget(QLabel(f"<span style='font-size:15pt;font-weight:800'>{APP_NAME}</span>"))
+        th.addWidget(QLabel(f"<span style='font-size:15pt;font-weight:800'>{APP_NAME}</span>"
+                            f"<span style='font-size:9pt;color:#9FBDE6'>  v{APP_VERSION}</span>"))
         self.comp = QLabel("")
         th.addSpacing(20)
         th.addWidget(self.comp)
