@@ -54,6 +54,20 @@ jobs:
           name: EDV-Hesabati-exe
           path: dist/EDV_Hesabati.exe
 
+      - name: «Son versiya» buraxılışı (həmişə eyni link)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: son-versiya
+          name: Son versiya
+          make_latest: true
+          body: |
+            Həmişə ən son yığılmış proqramlar. Commit: ${{ github.sha }}
+            ƏDV Hesabatı: EDV_Hesabati.exe · Rahat Hesabat: RahatHesabat.exe
+          files: |
+            dist/RahatHesabat.exe
+            dist/EDV_Hesabati.exe
+
       - name: Release (yalnız v* teqi ilə)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
