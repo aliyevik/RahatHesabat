@@ -25,7 +25,7 @@ from openpyxl import Workbook
 from rahat import theme
 from rahat.export_excel import save_grid_xlsx
 from rahat.export_pdf import resource_path, save_grid_pdf
-from rahat.layout import drop_columns, leaf_headers
+from rahat.layout import Grid, drop_columns, leaf_headers
 from rahat.gui import QSS, BluePanel, ReportTable, back_button, card, cell_text, parse_amount, pydate, qdate
 from rahat.model import fmt_date, fmt_money
 
@@ -370,6 +370,114 @@ class OpeningDialog(QDialog):
         QMessageBox.information(self, "Yükləndi", f"{n_ok} sətir yükləndi. Yoxlayıb «Yadda saxla» basın.")
 
 
+# ===================================================================== şirkət (baza) seçimi
+def new_company_dialog(parent) -> str | None:
+    """Yeni şirkət üçün ayrıca baza yaradır. Qaytarır: VÖEN və ya None."""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("Yeni şirkət (baza) yarat")
+    dlg.resize(520, 220)
+    lay = QVBoxLayout(dlg)
+    info = QLabel("Hər şirkətin məlumatı ayrıca bazada saxlanılır (məs. İNFLOR, Rahat Yaşam). "
+                  "Faylları yükləyəndə proqram VÖEN-i yoxlayır — başqa şirkətin faylı bu bazaya düşmür.")
+    info.setWordWrap(True)
+    info.setObjectName("muted")
+    lay.addWidget(info)
+    g = QGridLayout()
+    name, voen_e = QLineEdit(), QLineEdit()
+    name.setPlaceholderText("məs. İNFLOR MMC")
+    voen_e.setPlaceholderText("10 rəqəm")
+    voen_e.setMaxLength(10)
+    g.addWidget(QLabel("Şirkətin adı:"), 0, 0)
+    g.addWidget(name, 0, 1)
+    g.addWidget(QLabel("VÖEN:"), 1, 0)
+    g.addWidget(voen_e, 1, 1)
+    lay.addLayout(g)
+    bx = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    bx.button(QDialogButtonBox.Ok).setText("Bazanı yarat")
+    bx.button(QDialogButtonBox.Cancel).setText("İmtina")
+    lay.addWidget(bx)
+    result = {}
+
+    def ok():
+        v = re.sub(r"\D", "", voen_e.text())
+        if len(v) != 10 or not name.text().strip():
+            QMessageBox.warning(dlg, "Düzəldin", "Şirkətin adını və 10 rəqəmli VÖEN-i yazın.")
+            return
+        if v in [x for x, _ in list_bases()]:
+            QMessageBox.warning(dlg, "Artıq var", "Bu VÖEN üçün baza artıq mövcuddur.")
+            return
+        st = Store(v, name.text().strip())
+        st.save()
+        result["v"] = v
+        dlg.accept()
+    bx.accepted.connect(ok)
+    bx.rejected.connect(dlg.reject)
+    dlg.exec()
+    return result.get("v")
+
+
+class CompanyPicker(QDialog):
+    """Proqram açılanda: şirkəti (bazanı) seç və ya yenisini yarat."""
+
+    def __init__(self, parent=None, current=""):
+        super().__init__(parent)
+        self.setWindowTitle(f"{APP_NAME} — şirkət seçimi")
+        self.setWindowIcon(app_icon())
+        self.resize(700, 440)
+        self.chosen = None
+        lay = QVBoxLayout(self)
+        t = QLabel("Şirkət (baza) seçin")
+        t.setObjectName("pageTitle")
+        lay.addWidget(t)
+        s = QLabel("Hər şirkətin məlumatı ayrıca bazada saxlanılır. İşləyəcəyiniz şirkəti seçin və ya yenisini yaradın.")
+        s.setObjectName("muted")
+        s.setWordWrap(True)
+        lay.addWidget(s)
+        self.lst = QListWidget()
+        self.lst.itemDoubleClicked.connect(lambda _: self.open())
+        lay.addWidget(self.lst, 1)
+        hb = QHBoxLayout()
+        b_new = QPushButton("＋ Yeni şirkət (baza) yarat")
+        b_new.clicked.connect(self.create)
+        b_open = QPushButton("Aç  →")
+        b_open.setObjectName("primary")
+        b_open.clicked.connect(self.open)
+        hb.addWidget(b_new)
+        hb.addStretch(1)
+        hb.addWidget(b_open)
+        lay.addLayout(hb)
+        self.fill(current)
+
+    def fill(self, select=""):
+        self.lst.clear()
+        for v, name in list_bases():
+            st = Store(v)
+            c = st.counts()
+            it = QListWidgetItem(f"{short_name(name)}   ·   VÖEN {v}   ·   qaimə {c['alis'] + c['satis']}, "
+                                 f"bank {c['bank']}, depozit {c['depozit']}")
+            it.setData(Qt.UserRole, v)
+            self.lst.addItem(it)
+            if v == select:
+                self.lst.setCurrentItem(it)
+        if self.lst.count() and not self.lst.currentItem():
+            self.lst.setCurrentRow(0)
+        if not self.lst.count():
+            self.lst.addItem(QListWidgetItem("Hələ baza yoxdur — «Yeni şirkət (baza) yarat» düyməsini basın."))
+
+    def create(self):
+        v = new_company_dialog(self)
+        if v:
+            self.fill(v)
+
+    def open(self):
+        it = self.lst.currentItem()
+        v = it.data(Qt.UserRole) if it else None
+        if not v:
+            return
+        self.chosen = v
+        self.accept()
+
+
 # ===================================================================== məlumat bazası səhifəsi
 class BasePage(QWidget):
     """İl boyu məlumat bazası: ilkin qalıqlar bir dəfə, sonra hər ay yeni fayllar əlavə olunur."""
@@ -407,7 +515,10 @@ class BasePage(QWidget):
         self.company.setMinimumWidth(420)
         self.company.currentIndexChanged.connect(self._company_changed)
         g.addWidget(QLabel("Şirkət:"), 0, 0)
-        g.addWidget(self.company, 0, 1, 1, 3)
+        g.addWidget(self.company, 0, 1, 1, 2)
+        newc = QPushButton("＋ Yeni şirkət (baza)")
+        newc.clicked.connect(self.new_company)
+        g.addWidget(newc, 0, 3, alignment=Qt.AlignLeft)
         self.start = QDateEdit()
         self.start.setCalendarPopup(True)
         self.start.setDisplayFormat("dd.MM.yyyy")
@@ -546,6 +657,11 @@ class BasePage(QWidget):
             self.main.settings.save()
         self.refresh()
 
+    def new_company(self):
+        r = new_company_dialog(self)
+        if r:
+            self.reload_companies(r)
+
     # --- baza və backup
     def update_db_info(self):
         st = self.store
@@ -653,21 +769,14 @@ class BasePage(QWidget):
                 if not f.company_voen:
                     errs.append(f"{os.path.basename(p)}: şirkətin VÖEN-i tapılmadı.")
                     continue
-                if self.store is None or self.store.voen != f.company_voen:
-                    QApplication.restoreOverrideCursor()
-                    exists = f.company_voen in [v for v, _ in list_bases()]
-                    q = (f"{os.path.basename(p)} faylı «{f.company_name}» (VÖEN {f.company_voen}) şirkətinə aiddir.\n\n" +
-                         ("Bu şirkətin bazasına keçilsin?" if exists else "Bu şirkət üçün yeni baza yaradılsın?"))
-                    if self.store is not None and QMessageBox.question(self, "Başqa şirkət", q) != QMessageBox.Yes:
-                        QApplication.setOverrideCursor(Qt.WaitCursor)
-                        continue
-                    QApplication.setOverrideCursor(Qt.WaitCursor)
-                    self.store = Store(f.company_voen, f.company_name)
-                    if not self.store.start:
-                        y = (f.period[0] if f.period else dt.date.today()).year
-                        self.store.start = dt.date(y, 1, 1)
-                    self.store.save()
-                    self.reload_companies(f.company_voen)
+                if self.store is None:
+                    errs.append(f"{os.path.basename(p)}: əvvəlcə şirkəti (bazanı) seçin və ya yaradın.")
+                    continue
+                if self.store.voen != f.company_voen:
+                    errs.append(f"{os.path.basename(p)}: bu fayl «{f.company_name}» (VÖEN {f.company_voen}) şirkətinə "
+                                f"aiddir, açıq baza isə «{self.store.name}» (VÖEN {self.store.voen}). Fayl əlavə "
+                                f"edilmədi — həmin şirkətin bazasını açın və ya «Yeni şirkət» ilə yaradın.")
+                    continue
                 r = self.store.import_file(f)
                 msgs.append(f"✔ {KIND_NAMES[f.kind]} — {os.path.basename(p)}: yeni {r['added']}, "
                             f"yenilənən {r['updated']}, artıq bazada olan {r['same']}")
@@ -942,7 +1051,22 @@ class GridPage(QWidget):
         self.cols_menu.aboutToShow.connect(self._fill_cols_menu)
         self.fbar.addWidget(self.cols_btn)
         rl.addLayout(self.fbar)
-        self.table = ReportTable(self.show_detail, None, self.zoom)
+        self.flt_lbl = QLabel("")
+        self.flt_lbl.setStyleSheet(f"color:{theme.NAVY};")
+        self.flt_clear = QPushButton("Filtrləri təmizlə")
+        self.flt_clear.clicked.connect(self.clear_col_filters)
+        fl = QHBoxLayout()
+        fl.addWidget(self.flt_lbl, 1)
+        fl.addWidget(self.flt_clear)
+        self.flt_lbl.setVisible(False)
+        self.flt_clear.setVisible(False)
+        rl.addLayout(fl)
+        tip = QLabel("İpucu: sütun başlığına bir dəfə basın — o sütun üzrə filtr; rəqəmə iki dəfə basın — kartoçka.")
+        tip.setObjectName("muted")
+        tip.setStyleSheet("font-size:8.5pt;")
+        rl.addWidget(tip)
+        self.col_filters = {}
+        self.table = ReportTable(self.show_detail, None, self.zoom, self.open_col_filter)
         rl.addWidget(self.table, 1)
         self.views.addWidget(rep)
 
@@ -986,7 +1110,10 @@ class GridPage(QWidget):
 
     # --- sütunlar
     def _hidden_labels(self) -> set:
-        return set(self.main.settings.data.setdefault("hidden_cols", {}).get(self.title, []))
+        hc = self.main.settings.data.setdefault("hidden_cols", {})
+        if self.title not in hc:
+            return set(getattr(self.cls, "default_hidden", []))
+        return set(hc[self.title])
 
     def hidden_idx(self) -> set:
         if not self.grid:
@@ -1029,20 +1156,103 @@ class GridPage(QWidget):
         n_h = len(hid)
         self.cols_btn.setText(f"Sütunlar ▾ ({n_h} gizli)" if n_h else "Sütunlar ▾")
 
-    # --- axtarış
+    # --- axtarış və sütun filtrləri
+    def _cell_text(self, cells, c):
+        cell = cells[c] if c < len(cells) else None
+        if cell is None or cell.value is None:
+            return ""
+        return cell_text(cell.value) if isinstance(cell.value, (int, float)) else str(cell.value)
+
+    def open_col_filter(self, c):
+        if not self.grid:
+            return
+        labels = leaf_headers(self.grid)
+        lab = labels[c]
+        vals = []
+        for cells in self.grid.rows:
+            if cells and cells[0] is not None and cells[0].style in ("total", "section", "note"):
+                continue
+            v = self._cell_text(cells, c)
+            if v not in vals:
+                vals.append(v)
+        vals.sort(key=lambda x: (x == "", x.lower()))
+        cur = self.col_filters.get(lab)
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Filtr: {lab}")
+        dlg.resize(420, 520)
+        lay = QVBoxLayout(dlg)
+        q = QLineEdit()
+        q.setPlaceholderText("Siyahıda axtar…")
+        lay.addWidget(q)
+        lst = QListWidget()
+        for v in vals:
+            it = QListWidgetItem(v or "(boş)")
+            it.setData(Qt.UserRole, v)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if cur is None or v in cur else Qt.Unchecked)
+            lst.addItem(it)
+        lay.addWidget(lst, 1)
+        q.textChanged.connect(lambda txt: [lst.item(i).setHidden(txt.lower() not in lst.item(i).text().lower())
+                                           for i in range(lst.count())])
+        hb = QHBoxLayout()
+        for text, st in (("Hamısını seç", Qt.Checked), ("Heç birini", Qt.Unchecked)):
+            bb = QPushButton(text)
+            bb.clicked.connect(lambda _=False, st=st: [lst.item(i).setCheckState(st) for i in range(lst.count())
+                                                       if not lst.item(i).isHidden()])
+            hb.addWidget(bb)
+        hb.addStretch(1)
+        lay.addLayout(hb)
+        bx = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bx.button(QDialogButtonBox.Ok).setText("Tətbiq et")
+        bx.button(QDialogButtonBox.Cancel).setText("İmtina")
+        bx.accepted.connect(dlg.accept)
+        bx.rejected.connect(dlg.reject)
+        lay.addWidget(bx)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        chosen = {lst.item(i).data(Qt.UserRole) for i in range(lst.count()) if lst.item(i).checkState() == Qt.Checked}
+        if len(chosen) == len(vals):
+            self.col_filters.pop(lab, None)
+        else:
+            self.col_filters[lab] = chosen
+        self.apply_search()
+
+    def clear_col_filters(self):
+        self.col_filters = {}
+        self.apply_search()
+
+    def visible_rows(self):
+        start = len(self.grid.head_rows)
+        return [r - start for r in range(start, self.table.rowCount()) if not self.table.isRowHidden(r)]
+
     def apply_search(self):
         if not self.grid:
             return
         q = self.search.text().strip().lower()
+        labels = leaf_headers(self.grid)
+        idx = {lab: i for i, lab in enumerate(labels)}
+        flt = [(idx[lab], allowed) for lab, allowed in self.col_filters.items() if lab in idx]
         start = len(self.grid.head_rows)
+        shown = 0
         for r in range(start, self.table.rowCount()):
             cells = self.grid.rows[r - start]
-            is_total = cells and cells[0] is not None and cells[0].style in ("total", "section")
-            if not q or is_total:
-                self.table.setRowHidden(r, False)
-                continue
-            txt = " ".join(str(c.value) for c in cells if c is not None and c.value is not None).lower()
-            self.table.setRowHidden(r, q not in txt)
+            fixed = cells and cells[0] is not None and cells[0].style in ("total", "section", "note")
+            ok = True
+            if not fixed:
+                if q:
+                    txt = " ".join(str(c.value) for c in cells if c is not None and c.value is not None).lower()
+                    ok = q in txt
+                for c, allowed in flt:
+                    if ok and self._cell_text(cells, c) not in allowed:
+                        ok = False
+                shown += ok
+            self.table.setRowHidden(r, not ok)
+        active = [lab.split(" › ")[-1] for lab in self.col_filters if lab in idx]
+        self.flt_lbl.setVisible(bool(active))
+        self.flt_clear.setVisible(bool(active))
+        if active:
+            self.flt_lbl.setText(f"🔽 Filtr: <b>{', '.join(active)}</b> · göstərilən sətir: {shown} "
+                                 f"(CƏMİ sətri filtrsiz bütün siyahı üzrədir)")
 
     # --- filtrlər
     def build_filters(self):
@@ -1092,6 +1302,7 @@ class GridPage(QWidget):
         if hasattr(self.rep, "monthly"):
             self.rep.monthly = self.monthly.isChecked()
         self._filters = {}
+        self.col_filters = {}
         self.build_filters()
         self.grid = self.rep.grid(self.signature())
         self._update_info()
@@ -1188,7 +1399,13 @@ class GridPage(QWidget):
             return
         footer = f"{APP_NAME} — təqdim edir: {PRESENTED_BY} ({PRESENTED_URL})"
         try:
-            grid = drop_columns(self.grid, self.hidden_idx())
+            g0 = self.grid
+            if self.col_filters or self.search.text().strip():
+                vis = set(self.visible_rows())
+                g0 = Grid(g0.title, g0.subtitle, g0.ncols, g0.head_rows,
+                          [row for i, row in enumerate(g0.rows) if i in vis], g0.col_widths, g0.top_lines,
+                          g0.signature, g0.footnote, g0.stacked)
+            grid = drop_columns(g0, self.hidden_idx())
             if kind == "pdf":
                 save_grid_pdf(grid, p, paper=["auto", "A4", "A3"][self.paper.currentIndex()], footer_text=footer)
             else:
@@ -1299,7 +1516,6 @@ class Main(QMainWindow):
         ("📊   Bank xülasəsi", (BankReport, "Bank xülasəsi", "Bank", None)),
         ("📗   Debitor borclar (alıcılar)", (SalesReport, "Debitor borclar (alıcılar)", "Debitor", None)),
         ("📕   Kreditor borclar (təchizatçılar)", (Creditors, "Kreditor borclar (təchizatçılar)", "Kreditor", None)),
-        ("🧾   ƏDV yekunu (ətraflı)", (Summary, "ƏDV yekunu (ətraflı)", "ƏDV yekunu", None)),
         ("🅰   Avans qaimələri", (Advances, "Avans qaimələri", "Avanslar", None)),
         ("⚠   Yoxlanılmalı", (IssuesReport, "Yoxlanılmalı məqamlar", "Yoxlanılmalı", None)),
     ]
@@ -1395,6 +1611,13 @@ def run():
     holder = {}
 
     def open_main():
+        st = Settings()
+        pk = CompanyPicker(None, st.data.get("last_company", ""))
+        if pk.exec() != QDialog.Accepted or not pk.chosen:
+            app.quit()
+            return
+        st.data["last_company"] = pk.chosen
+        st.save()
         w = Main()
         holder["main"] = w
         w.showMaximized()

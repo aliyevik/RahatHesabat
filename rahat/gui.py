@@ -230,11 +230,12 @@ def cell_text(v) -> str:
 class ReportTable(QTableWidget):
     """Hesabat cədvəli: miqyas (zoom), ekrana sığdırma və rəqəmə basanda kartoçka."""
 
-    def __init__(self, on_ref, on_move=None, on_zoom=None):
+    def __init__(self, on_ref, on_move=None, on_zoom=None, on_head=None):
         super().__init__()
         self.on_ref = on_ref
         self.on_move = on_move
         self.on_zoom = on_zoom
+        self.on_head = on_head
         self.grid: Grid | None = None
         self.refs: list = []
         self.drags: list = []
@@ -253,7 +254,8 @@ class ReportTable(QTableWidget):
         self.setMouseTracking(True)
         self.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.cellClicked.connect(self._clicked)
+        self.cellDoubleClicked.connect(self._clicked)      # kartoçka — iki kliklə
+        self.cellClicked.connect(self._head_clicked)
         self.cellEntered.connect(self._entered)
 
     def _ref_at(self, r, c):
@@ -262,6 +264,10 @@ class ReportTable(QTableWidget):
             return None
         i = it.data(Qt.UserRole)
         return self.refs[i] if isinstance(i, int) and 0 <= i < len(self.refs) else None
+
+    def _head_clicked(self, r, c):
+        if self.on_head and self.grid and r < len(self.grid.head_rows):
+            self.on_head(c)
 
     def _clicked(self, r, c):
         ref = self._ref_at(r, c)
@@ -380,7 +386,7 @@ class ReportTable(QTableWidget):
                 if cell.ref is not None and isinstance(v, (int, float)) and abs(v) >= 0.005:
                     it.setData(Qt.UserRole, len(self.refs))
                     self.refs.append(cell.ref)
-                    it.setToolTip("Bu rəqəmin necə yarandığını görmək üçün basın")
+                    it.setToolTip("Bu rəqəmin necə yarandığını görmək üçün iki dəfə basın")
                 if cell.drag is not None and self.on_move:
                     it.setData(Qt.UserRole + 1, len(self.drags))
                     self.drags.append(cell.drag)
@@ -581,7 +587,7 @@ class ReportPage(QWidget):
         for w in (self.btn_reset, z_out, z_in, self.z_fit, self.paper, self.btn_pdf, self.btn_xlsx):
             bar.addWidget(w)
         rl.addLayout(bar)
-        hint = QLabel("İpucu: istənilən rəqəmə basın — onun hansı sənədlərdən yarandığı kartoçkada açılacaq."
+        hint = QLabel("İpucu: istənilən rəqəmə iki dəfə basın — onun hansı sənədlərdən yarandığı kartoçkada açılacaq."
                       + ("  Maddənin adını tutub yuxarı-aşağı dartsanız, yeri dəyişəcək."
                          if self.can_reorder else ""))
         hint.setObjectName("muted")
