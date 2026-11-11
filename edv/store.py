@@ -24,6 +24,7 @@ _CODE_HASH = "ad5a17f5b6980e9eb309bd2edd01e9bb291070c03a451a44ea4fad1726a545a5"
 # Əlavə ehtiyat nüsxə qovluğu (istifadəçi seçir: D:\, flash, OneDrive ...)
 EXTRA_BACKUP_DIR = ""
 KEEP_BACKUPS = 40
+SAVE_HOOK = lambda store: None   # GUI GitHub sinxronizasiyasını burada qoşur
 
 
 def check_code(code: str) -> bool:
@@ -124,6 +125,10 @@ class Store:
             os.fsync(f.fileno())
         os.replace(tmp, self.path)
         self.backup()
+        try:
+            SAVE_HOOK(self)
+        except Exception:  # noqa
+            pass
 
     # ---- ehtiyat nüsxələr
     def backup_dirs(self) -> list[str]:
@@ -181,7 +186,7 @@ class Store:
     def import_file(self, f: SourceFile) -> dict:
         """Faylı bazaya əlavə edir. Qaytarır: {"added", "updated", "same"}"""
         store = self.data[f.kind]
-        added = updated = same = 0
+        added = updated = same = skipped = 0
         for x in f.items:
             k = _key(f.kind, x)
             d = _ser(x)
@@ -215,10 +220,65 @@ class Store:
         self.save()
         return {"added": added, "updated": updated, "same": same}
 
+    # ---- redaktə qatı: idxal olunan məlumat dəyişmir, düzəlişlər ayrıca saxlanır və jurnala yazılır
+    def edits(self, kind) -> dict:
+        return self.data.setdefault("edits", {}).setdefault(kind, {})
+
+    def effective(self, kind, key) -> dict | None:
+        d = self.data[kind].get(key)
+        if d is None:
+            return None
+        d = dict(d)
+        d.update({k: v for k, v in self.edits(kind).get(key, {}).items() if not k.startswith("_")})
+        return d
+
+    def apply_edit(self, kind, key, changes: dict, reason: str, label: str = ""):
+        """changes: {sahə: yeni dəyər}; '_excluded': True/False — hesaba alınmasın."""
+        cur = self.effective(kind, key) or {}
+        ed = self.edits(kind).setdefault(key, {})
+        log = self.data.setdefault("edit_log", [])
+        now = dt.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        for f, new in changes.items():
+            if isinstance(new, dt.date):
+                new = new.isoformat()
+            old = ed.get("_excluded", False) if f == "_excluded" else cur.get(f)
+            if old == new or (isinstance(old, (int, float)) and isinstance(new, (int, float))
+                              and abs(old - new) < 0.005):
+                continue
+            ed[f] = new
+            log.append({"at": now, "kind": kind, "key": key, "label": label or key, "field": f,
+                        "old": old, "new": new, "reason": reason})
+        if not ed:
+            self.edits(kind).pop(key, None)
+        self.save()
+
+    def add_manual(self, kind, item, reason: str) -> str:
+        k = _key(kind, item)
+        if k in self.data[kind]:
+            raise ValueError("Bu nömrə ilə sənəd bazada artıq var.")
+        d = _ser(item)
+        d["source"] = "əl ilə"
+        self.data[kind][k] = d
+        self.data.setdefault("edit_log", []).append({
+            "at": dt.datetime.now().strftime("%d.%m.%Y %H:%M:%S"), "kind": kind, "key": k, "label": k,
+            "field": "(əl ilə əlavə edildi)", "old": None, "new": f"{getattr(item, 'yekun', '')}", "reason": reason})
+        self.save()
+        return k
+
     # ---- hesablama üçün
-    def items(self, kind) -> list:
+    def items(self, kind, with_excluded: bool = False) -> list:
         cls = self.CLS[kind]
-        return [_de(cls, d) for d in self.data[kind].values()]
+        out = []
+        for key in self.data[kind]:
+            ed = self.edits(kind).get(key, {})
+            if ed.get("_excluded") and not with_excluded:
+                continue
+            obj = _de(cls, self.effective(kind, key))
+            obj._key = key
+            obj._edited = bool([k for k in ed if not k.startswith("_")])
+            obj._excluded = bool(ed.get("_excluded"))
+            out.append(obj)
+        return out
 
     def source_files(self) -> list[SourceFile]:
         out = []
@@ -238,6 +298,9 @@ class Store:
 
     def counts(self) -> dict:
         return {k: len(self.data[k]) for k in self.KINDS}
+
+    def on_saved(self):
+        """GUI tərəfindən təyin olunur (GitHub sinxronizasiyası üçün)."""
 
     def coverage(self) -> dict:
         """{(il, ay): {növ: say}}"""

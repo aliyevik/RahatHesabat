@@ -129,14 +129,14 @@ class PurchaseRegister(Offset):
         return [("status", "Əvəzləşmə statusu", [("Bütün statuslar", None)] + [(x, x) for x in self.STATUSES])]
 
     def grid(self, signature):
-        heads = [("Kontragent", ["№", "VÖEN", "Satıcı"]),
+        heads = [("Kontragent", ["№", "Vergitutma ayı", "VÖEN", "Satıcı"]),
                  ("E-QAİMƏ", ["Tarix", "Gəlmə ayı", "Seriya", "Nömrə", "Ümumi məbləğ (ƏDV daxil)", "ƏDV 18%",
                               "Məbləğ ƏDV xaric", "Yol vergisi", "ƏDV-dən azad", "0% dərəcə"]),
                  ("Ödənişlər", ["Bank (əsas)", "ƏDV (depozit)", "Tarix"]),
                  ("Qalıq", ["Kreditor borc — əsas (ƏDV xaric)", "Kreditor borc — ƏDV"]),
                  ("Əvəzləşmə", ["Əvəzləşmə dövrü", "Status"])]
         nc = sum(len(s) for _, s in heads)
-        widths = [0.5, 1.1, 3.0, 1.0, 1.2, 0.9, 1.0, 1.2, 1.0, 1.15, 0.9, 0.9, 0.9, 1.1, 1.0, 1.6, 1.2, 1.1, 1.3, 1.6]
+        widths = [0.5, 1.4, 1.1, 3.0, 1.0, 1.2, 0.9, 1.0, 1.2, 1.0, 1.15, 0.9, 0.9, 0.9, 1.1, 1.0, 1.6, 1.2, 1.1, 1.3, 1.6]
         g = Grid(title=f"{self.R.company_name} · VÖEN {self.R.company_voen}",
                  subtitle=f"{fmt_date(self.a)} – {fmt_date(self.b)} · Gələn qaimələr və əvəzləşmə (alış)",
                  ncols=nc, col_widths=widths, signature=signature)
@@ -154,7 +154,9 @@ class PurchaseRegister(Offset):
             if want and (want != "Passiv" if b is None else False):
                 continue
             ref = ("inv", id(i))
-            head = [t(str(k + 1), ITEM, "center"), t(i.voen, ITEM, "center"), t(i.name),
+            pay_m = sorted({mkey(x.pay.date) for x in self.by_inv[id(i)] if x.pay.date <= self.b})
+            head = [t(str(k + 1), ITEM, "center"), t(", ".join(mshort(m) for m in pay_m) or "—", ITEM, "center"),
+                    t(i.voen, ITEM, "center"), t(i.name),
                     t(fmt_date(i.date), ITEM, "center"), t(mshort(mkey(i.date)), ITEM, "center"),
                     t(i.seria, ITEM, "center"), t(i.nomre, ITEM, "center")]
             if b is None:
@@ -202,13 +204,14 @@ class PurchaseRegister(Offset):
                 tot[key] += x
             tot["kn"] += b[0] - pn
             tot["kv"] += b[1] - pv
-        g.rows.append([t("CƏMİ", TOTAL, colspan=7)] + [None] * 6 +
+        g.rows.append([t("CƏMİ", TOTAL, colspan=8)] + [None] * 7 +
                       [n(tot[x], TOTAL) for x in ("yek", "vat", "net", "yol", "azad", "sifir", "pn", "pv")] +
                       [t("", TOTAL), n(tot["kn"], TOTAL), n(tot["kv"], TOTAL), t("", TOTAL),
                        t(f"Dövrdə əvəzləşən ƏDV: {fmt_money(self.offset_vat)}", TOTAL)])
         g.top_lines = [("Dövrdə əvəzləşdirilən ƏDV:", round(self.offset_vat, 2)),
                        ("Kreditor borc — əsas:", round(tot["kn"], 2)), ("Kreditor borc — ƏDV:", round(tot["kv"], 2))]
-        g.footnote = ("Ödənişlər VÖEN üzrə FIFO ilə bağlanır: bank — əsas məbləği, ƏDV depozit — ƏDV-ni. Əvəzləşmə "
+        g.footnote = ("Vergitutma ayı — ödənişin (bank və ya ƏDV depozit) edildiyi ay(lar), satışdakı kimi. "
+                      "Ödənişlər VÖEN üzrə FIFO ilə bağlanır: bank — əsas məbləği, ƏDV depozit — ƏDV-ni. Əvəzləşmə "
                       "dövrü — ƏDV ödənişinin (və qaimənin) ayı. Passiv qaimələr boz sətirdə, hesaba alınmır.")
         self._inv_by_id = {id(i): i for i in self.invoices}
         return g

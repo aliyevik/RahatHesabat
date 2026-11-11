@@ -274,7 +274,9 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
         name_ok = names_match(o.cp_name, official) if (official and o.cp_name) else None
         internal = (v == company_voen or v == "9900003611" or "kassa" in t or "kartdan" in t
                     or "plastik kart" in t or "karta" in t or "standby" in t)
-        if o.amount > 0:
+        if getattr(o, "category", ""):
+            cat = o.category
+        elif o.amount > 0:
             if v in cus_voens:
                 cat = IN_SALES
             elif v in sup_voens:

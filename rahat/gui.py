@@ -383,10 +383,12 @@ class ReportTable(QTableWidget):
                     it.setForeground(QBrush(QColor("#1E7B3C")))
                 if isinstance(v, str) and len(v) > 40:
                     it.setToolTip(v)
-                if cell.ref is not None and isinstance(v, (int, float)) and abs(v) >= 0.005:
+                if cell.ref is not None and ((isinstance(v, (int, float)) and abs(v) >= 0.005)
+                                             or (isinstance(cell.ref, tuple) and cell.ref[:1] == ("edit",))):
                     it.setData(Qt.UserRole, len(self.refs))
                     self.refs.append(cell.ref)
-                    it.setToolTip("Bu rəqəmin necə yarandığını görmək üçün iki dəfə basın")
+                    it.setToolTip("Redaktə üçün iki dəfə basın" if cell.ref[:1] == ("edit",) else
+                                  "Bu rəqəmin necə yarandığını görmək üçün iki dəfə basın")
                 if cell.drag is not None and self.on_move:
                     it.setData(Qt.UserRole + 1, len(self.drags))
                     self.drags.append(cell.drag)

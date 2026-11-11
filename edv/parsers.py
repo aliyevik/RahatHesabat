@@ -184,6 +184,7 @@ class BankOp:
     currency: str
     teyinat: str
     source: str = ""
+    category: str = ""      # əl ilə təyin olunmuş kateqoriya (boş — avtomatik)
 
 
 @dataclass

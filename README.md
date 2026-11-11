@@ -64,3 +64,13 @@ oxunur və bütün faylların eyni şirkətə aid olduğu yoxlanılır.
 * **Gələn qaimə, Əvəzləşmə** — yol vergisi, azad/0%, ödənişlər, kreditor qalığı, əvəzləşmə dövrü, «Əlavə 1».
 * **Bank əməliyyatları** — ay, növ, qarşı tərəf, kateqoriya filtrləri, axtarış, aid olduğu qaimə (tam/qismən).
 * Hər hesabatda «Sütunlar» menyusu: lazımsız sütunları söndürmək (ekranda və PDF/Excel-də).
+
+### v3.0 — modullar
+* **Uçot modulları**: Göndərilən qaimələr, Gələn qaimələr, Bank, ƏDV depozit — fayllar öz bölməsində yüklənir;
+  sətrə iki dəfə basanda redaktə (səbəb mütləqdir), «hesaba alınmasın», qaiməni əl ilə əlavə etmək.
+  İdxal olunan ilkin məlumat dəyişmir — düzəlişlər ayrıca qatda saxlanılır, «Dəyişikliklər jurnalı»na yazılır.
+* **ƏDV hesabatı** ayrıca pəncərədə (vərəqlər): Hesablaşma, Təqdim edilən e-qaimə, Gələn qaimə/Əvəzləşmə,
+  Ödənişlər. Vergitutma ayı həm satışda, həm alışda ödənişin ayıdır.
+* Dövr seçimi pəncərənin yuxarısındadır; dəyişəndə bütün bölmələr avtomatik yenilənir.
+* **GitHub**: baza sıxılmış şəkildə gizli (Private) repoya avtomatik göndərilir (`baza/<VÖEN>.json.gz`),
+  başqa kompüterdə «GitHub-dan yüklə». Açıq repoya göndərilmir.

@@ -13,7 +13,7 @@ from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QFontMetrics, QIcon
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QDialog,
                                QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
                                QHeaderView, QInputDialog, QLabel, QLineEdit, QMenu, QPlainTextEdit,
-                               QScrollArea, QToolButton, QListWidget, QListWidgetItem, QMainWindow,
+                               QScrollArea, QTabWidget, QToolButton, QListWidget, QListWidgetItem, QMainWindow,
                                QMessageBox, QPushButton, QStackedWidget, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -33,8 +33,10 @@ from . import APP_NAME, APP_VERSION, DEDICATED_TO, PRESENTED_BY, PRESENTED_URL
 from .engine import compute, short_name
 from . import store as store_mod
 from .store import Store, base_dir, check_code, list_bases
+from .cloud import GitHubSync, SyncError
 from .parsers import ParseError, load
 from .reports2 import BankOps, PurchaseRegister, SalesRegister, Settlement
+from .modules import BankModule, DepositModule, EditLog, PurchaseModule, SalesModule
 from .reports import (Advances, BankReport, Creditors, Debtors, IssuesReport, Offset, SalesReport, Summary, mlabel,
                       months_between)
 
@@ -444,6 +446,10 @@ class CompanyPicker(QDialog):
         b_open.setObjectName("primary")
         b_open.clicked.connect(self.open)
         hb.addWidget(b_new)
+        b_gh = QPushButton("⬇ GitHub-dan yüklə")
+        b_gh.setToolTip("Başqa kompüterdə yaradılmış bazanı gizli GitHub reposundan götür")
+        b_gh.clicked.connect(self.from_github)
+        hb.addWidget(b_gh)
         hb.addStretch(1)
         hb.addWidget(b_open)
         lay.addLayout(hb)
@@ -465,6 +471,22 @@ class CompanyPicker(QDialog):
         if not self.lst.count():
             self.lst.addItem(QListWidgetItem("Hələ baza yoxdur — «Yeni şirkət (baza) yarat» düyməsini basın."))
 
+    def from_github(self):
+        st = Settings()
+        repo, token = st.data.get("github_repo", ""), st.data.get("github_token", "")
+        if not (repo and token):
+            repo, ok = QInputDialog.getText(self, "GitHub", "Gizli reponun adı (məs. aliyevik/edv-baza):", text=repo)
+            if not ok or not repo.strip():
+                return
+            token, ok = QInputDialog.getText(self, "GitHub", "Token:", QLineEdit.Password)
+            if not ok or not token.strip():
+                return
+            st.data["github_repo"], st.data["github_token"] = repo.strip(), token.strip()
+            st.save()
+        v = github_restore_dialog(self, GitHubSync(st.data["github_repo"], st.data["github_token"]))
+        if v:
+            self.fill(v)
+
     def create(self):
         v = new_company_dialog(self)
         if v:
@@ -479,6 +501,216 @@ class CompanyPicker(QDialog):
         self.accept()
 
 
+# ===================================================================== redaktə pəncərəsi
+STATUS_OPTIONS = ["Təsdiqləndi", "Sistem tərəfindən təsdiqləndi", "Təsdiq gözləyən", "Passiv edilmiş"]
+INV_NOVU = "Malların, işlərin və xidmətlərin təqdim edilməsi barədə elektron qaimə-faktura"
+
+
+def edit_dialog(parent, store, kind, key) -> bool:
+    """Sənədi redaktə et (key=None — qaiməni əl ilə əlavə et). Düzəlişlər jurnala yazılır."""
+    from .engine import BANK_IN_ORDER, BANK_OUT_ORDER
+    from .parsers import Invoice
+    is_new = key is None
+    cur = {} if is_new else (store.effective(kind, key) or {})
+    orig = {} if is_new else dict(store.data[kind].get(key, {}))
+    excluded = False if is_new else bool(store.edits(kind).get(key, {}).get("_excluded"))
+    dlg = QDialog(parent)
+    names = {"satis": "Göndərilən qaimə", "alis": "Gələn qaimə", "bank": "Bank əməliyyatı", "depozit": "ƏDV depozit əməliyyatı"}
+    dlg.setWindowTitle(("Yeni " if is_new else "Redaktə: ") + names[kind])
+    dlg.resize(640, 560)
+    lay = QVBoxLayout(dlg)
+    if not is_new:
+        src = QLabel(f"Mənbə: {orig.get('source', '')}  ·  Açar: {key}<br>"
+                     f"<span style='color:{theme.MUTED}'>İdxal olunmuş ilkin məlumat dəyişmir — düzəlişlər ayrıca "
+                     f"saxlanılır və «Dəyişikliklər jurnalı»na yazılır.</span>")
+        src.setWordWrap(True)
+        lay.addWidget(src)
+    form = QGridLayout()
+    widgets = {}
+    r = 0
+
+    def add(label, field, w):
+        nonlocal r
+        form.addWidget(QLabel(label), r, 0)
+        form.addWidget(w, r, 1)
+        widgets[field] = w
+        r += 1
+
+    def d_edit(v):
+        w = QDateEdit()
+        w.setCalendarPopup(True)
+        w.setDisplayFormat("dd.MM.yyyy")
+        w.setDate(qdate(dt.date.fromisoformat(v)) if v else QDate.currentDate())
+        return w
+
+    def num_edit(v):
+        w = QLineEdit(fmt_money(float(v)) if v not in (None, "") else "")
+        w.setAlignment(Qt.AlignRight)
+        return w
+
+    if kind in ("satis", "alis"):
+        add("Tarix:", "date", d_edit(cur.get("date")))
+        ser, nom = QLineEdit(cur.get("seria", "MT")), QLineEdit(cur.get("nomre", ""))
+        ser.setReadOnly(not is_new)
+        nom.setReadOnly(not is_new)
+        add("Seriya:", "seria", ser)
+        add("Nömrə:", "nomre", nom)
+        add("VÖEN:", "voen", QLineEdit(cur.get("voen", "")))
+        add("Alıcı:" if kind == "satis" else "Satıcı:", "name", QLineEdit(cur.get("name", "")))
+        cb = QComboBox()
+        cb.setEditable(True)
+        cb.addItems(STATUS_OPTIONS)
+        cb.setCurrentText(cur.get("status", "Təsdiqləndi"))
+        add("Status:", "status", cb)
+        add("ƏDV-siz məbləğ:", "edvsiz", num_edit(cur.get("edvsiz")))
+        add("ƏDV:", "edv", num_edit(cur.get("edv")))
+        add("Yekun (boş qalsa: ƏDV-siz + ƏDV):", "yekun", num_edit(cur.get("yekun")))
+        add("Qeyd:", "note", QLineEdit(cur.get("note", "")))
+    elif kind == "bank":
+        add("Tarix:", "date", d_edit(cur.get("date")))
+        add("Qarşı tərəfin VÖEN-i:", "cp_voen", QLineEdit(cur.get("cp_voen", "")))
+        add("Qarşı tərəf:", "cp_name", QLineEdit(cur.get("cp_name", "")))
+        add("Məbləğ (+ mədaxil / − məxaric):", "amount", num_edit(cur.get("amount")))
+        add("Təyinat:", "teyinat", QLineEdit(cur.get("teyinat", "")))
+        cb = QComboBox()
+        cb.addItem("Avtomatik (proqram təyin edir)", "")
+        for c in BANK_IN_ORDER + BANK_OUT_ORDER:
+            cb.addItem(c, c)
+        i = cb.findData(cur.get("category", ""))
+        cb.setCurrentIndex(max(0, i))
+        add("Kateqoriya:", "category", cb)
+    else:
+        add("Tarix:", "date", d_edit(cur.get("date")))
+        add("VÖEN:", "voen", QLineEdit(cur.get("voen", "")))
+        add("Kontragent:", "name", QLineEdit(cur.get("name", "")))
+        add("Mədaxil:", "medaxil", num_edit(cur.get("medaxil")))
+        add("Məxaric:", "mexaric", num_edit(cur.get("mexaric")))
+        add("Əməliyyatın növü:", "novu", QLineEdit(cur.get("novu", "")))
+        add("Təyinat:", "teyinat", QLineEdit(cur.get("teyinat", "")))
+    exc = QCheckBox("Bu sənəd hesaba alınmasın (silinmir, boz göstərilir)")
+    exc.setChecked(excluded)
+    if not is_new:
+        form.addWidget(exc, r, 0, 1, 2)
+        r += 1
+    reason = QLineEdit()
+    reason.setPlaceholderText("məs. bankda səhv VÖEN, qaimə düzəlişi və s. — jurnala yazılır")
+    form.addWidget(QLabel("<b>Səbəb (mütləq):</b>"), r, 0)
+    form.addWidget(reason, r, 1)
+    lay.addLayout(form)
+    if not is_new:
+        hist = [e for e in store.data.get("edit_log", []) if e["kind"] == kind and e["key"] == key]
+        if hist:
+            hl = QLabel("<b>Bu sənədin düzəliş tarixçəsi:</b><br>" + "<br>".join(
+                f"{e['at']} — {e['field']}: {e['old']} → {e['new']} ({e.get('reason', '')})" for e in hist[-6:]))
+            hl.setWordWrap(True)
+            hl.setObjectName("muted")
+            lay.addWidget(hl)
+    lay.addStretch(1)
+    bx = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+    bx.button(QDialogButtonBox.Save).setText("Yadda saxla")
+    bx.button(QDialogButtonBox.Cancel).setText("İmtina")
+    lay.addWidget(bx)
+    result = {"ok": False}
+
+    def collect():
+        out = {}
+        for f, w in widgets.items():
+            if isinstance(w, QDateEdit):
+                out[f] = pydate(w.date()).isoformat()
+            elif isinstance(w, QComboBox):
+                out[f] = w.currentData() if f == "category" else w.currentText().strip()
+            else:
+                txt = w.text().strip()
+                if f in ("edvsiz", "edv", "yekun", "amount", "medaxil", "mexaric"):
+                    out[f] = parse_amount(txt) if txt else (None if f == "yekun" else 0.0)
+                else:
+                    out[f] = txt
+        if "yekun" in out and out["yekun"] is None:
+            out["yekun"] = round(out.get("edvsiz", 0) + out.get("edv", 0), 2)
+        return out
+
+    def save():
+        if not reason.text().strip():
+            QMessageBox.warning(dlg, "Səbəb", "Düzəlişin səbəbini yazın — jurnala düşür.")
+            return
+        try:
+            out = collect()
+        except ValueError:
+            QMessageBox.warning(dlg, "Rəqəm", "Məbləğlər düzgün yazılmayıb.")
+            return
+        for f in ("voen", "cp_voen"):
+            if out.get(f) and len(re.sub(r"\D", "", out[f])) != 10:
+                QMessageBox.warning(dlg, "VÖEN", "VÖEN 10 rəqəm olmalıdır.")
+                return
+        if is_new:
+            if not out.get("nomre") or not out.get("voen"):
+                QMessageBox.warning(dlg, "Məlumat", "Nömrə və VÖEN mütləqdir.")
+                return
+            inv = Invoice(side=kind, voen=out["voen"], name=out["name"], tip="Cari", status=out["status"],
+                          date=dt.date.fromisoformat(out["date"]), seria=out["seria"], nomre=out["nomre"],
+                          novu=INV_NOVU, note=out["note"], note2="", edvsiz=out["edvsiz"], edv=out["edv"],
+                          celb=out["edvsiz"] if out["edv"] else 0.0, celb_olmayan=0.0,
+                          azad=0.0 if out["edv"] else out["edvsiz"], sifir=0.0, yekun=out["yekun"])
+            try:
+                store.add_manual(kind, inv, reason.text().strip())
+            except ValueError as ex:
+                QMessageBox.warning(dlg, "Təkrar", str(ex))
+                return
+        else:
+            changes = {f: v for f, v in out.items() if f not in ("seria", "nomre") and v != cur.get(f)}
+            if exc.isChecked() != excluded:
+                changes["_excluded"] = exc.isChecked()
+            if not changes:
+                dlg.reject()
+                return
+            label = key.replace("|", "") if kind in ("satis", "alis") else \
+                f"{fmt_date(dt.date.fromisoformat(cur['date']))} · {cur.get('cp_name') or cur.get('name', '')}"[:60]
+            store.apply_edit(kind, key, changes, reason.text().strip(), label)
+        result["ok"] = True
+        dlg.accept()
+    bx.accepted.connect(save)
+    bx.rejected.connect(dlg.reject)
+    dlg.exec()
+    return result["ok"]
+
+
+def github_restore_dialog(parent, sync) -> str | None:
+    """GitHub-dakı bazalardan birini bu kompüterə yüklə (mövcud baza əvvəlcə nüsxəyə yazılır)."""
+    QApplication.setOverrideCursor(Qt.WaitCursor)
+    try:
+        voens = sync.list_bases()
+    except SyncError as ex:
+        QApplication.restoreOverrideCursor()
+        QMessageBox.warning(parent, "GitHub", str(ex))
+        return None
+    QApplication.restoreOverrideCursor()
+    if not voens:
+        QMessageBox.information(parent, "GitHub", "GitHub reposunda baza tapılmadı.")
+        return None
+    item, ok = QInputDialog.getItem(parent, "GitHub-dan yüklə", "Hansı şirkətin bazası yüklənsin (VÖEN)?",
+                                    voens, 0, False)
+    if not ok:
+        return None
+    QApplication.setOverrideCursor(Qt.WaitCursor)
+    try:
+        data = sync.download(item)
+    except SyncError as ex:
+        QApplication.restoreOverrideCursor()
+        QMessageBox.warning(parent, "GitHub", str(ex))
+        return None
+    QApplication.restoreOverrideCursor()
+    st = Store(item, data.get("company_name", ""))
+    if os.path.exists(st.path):
+        if QMessageBox.question(parent, "Baza var", "Bu kompüterdə həmin şirkətin bazası var. GitHub-dakı ilə əvəz "
+                                "olunsun? (cari baza əvvəlcə nüsxəyə yazılacaq)") != QMessageBox.Yes:
+            return None
+        st.backup("github_berpadan_evvel")
+    st.data = data
+    st.save()
+    QMessageBox.information(parent, "GitHub", f"Baza yükləndi: {data.get('company_name', '')} · VÖEN {item}")
+    return item
+
+
 # ===================================================================== məlumat bazası səhifəsi
 class BasePage(QWidget):
     """İl boyu məlumat bazası: ilkin qalıqlar bir dəfə, sonra hər ay yeni fayllar əlavə olunur."""
@@ -487,7 +719,6 @@ class BasePage(QWidget):
         super().__init__()
         self.main = main
         self.store: Store | None = None
-        self.setAcceptDrops(True)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         sc = QScrollArea()
@@ -499,11 +730,11 @@ class BasePage(QWidget):
         root = QVBoxLayout(body)
         root.setContentsMargins(22, 18, 22, 18)
         root.setSpacing(12)
-        t = QLabel("Məlumat bazası")
+        t = QLabel("Şirkət və baza")
         t.setObjectName("pageTitle")
-        s = QLabel("İlin (dövrün) əvvəlinə qalıqları bir dəfə yazın, sonra hər ay e-taxes və bankdan endirdiyiniz "
-                   "faylları əlavə edin. Bütün məlumat bazada yığılır — istənilən ay üçün hesabat ilin əvvəlindən "
-                   "bütün hərəkətlər nəzərə alınaraq hesablanır, ayın ilk və son qalığı düzgün çıxır.")
+        s = QLabel("İlkin qalıqları bir dəfə yazın, sonra hər ay faylları öz bölmələrində yükləyin (Göndərilən qaimələr, "
+                   "Gələn qaimələr, Bank, ƏDV depozit). Bütün məlumat bu şirkətin bazasında yığılır — istənilən ay "
+                   "üçün hesabat başlanğıcdan bütün hərəkətlər nəzərə alınaraq hesablanır.")
         s.setObjectName("muted")
         s.setWordWrap(True)
         root.addWidget(t)
@@ -560,15 +791,11 @@ class BasePage(QWidget):
         lb.addLayout(hbb)
 
         # 2. Fayllar
-        c2, l2 = card("2. Faylları bazaya əlavə et")
+        c2, l2 = card("Bazada nə var")
         hb = QHBoxLayout()
-        b = QPushButton("Faylları seç…")
-        b.setObjectName("primary")
-        b.setCursor(Qt.PointingHandCursor)
-        b.clicked.connect(self.pick)
-        hb.addWidget(b)
-        hb2 = QLabel("və ya faylları bu pəncərəyə sürüşdürün. Təkrar sətirlər atılır, statusu dəyişən qaimə "
-                     "yenilənir (məs. «təsdiq gözləyən» → «təsdiqləndi»).")
+        hb2 = QLabel("Fayllar öz bölmələrində yüklənir: «Göndərilən qaimələr», «Gələn qaimələr», «Bank», "
+                     "«ƏDV depozit» → «Fayl yüklə». Təkrar qaimələr e-qaimə nömrəsinə görə tanınır və təkrar "
+                     "sayılmır, statusu dəyişən qaimə (məs. passiv) yenilənir.")
         hb2.setObjectName("muted")
         hb2.setWordWrap(True)
         hb.addWidget(hb2, 1)
@@ -625,6 +852,7 @@ class BasePage(QWidget):
         self.pinfo.setWordWrap(True)
         l3.addWidget(self.pinfo)
         root.addWidget(c3)
+        c3.setVisible(False)          # dövr seçimi əsas pəncərənin yuxarısındadır
         self._backup_card = cb
 
         self.go = QPushButton("Hesabla və hesabatları aç  →")
@@ -632,7 +860,40 @@ class BasePage(QWidget):
         self.go.setMinimumHeight(44)
         self.go.clicked.connect(self.run)
         root.addWidget(self.go)
+        self.go.setVisible(False)
         root.addWidget(cb)
+
+        # GitHub
+        cg, lg = card("GitHub — bazanın gizli (Private) repoda saxlanması")
+        gi = QLabel("Baza hər dəyişiklikdən sonra avtomatik olaraq sizin GİZLİ GitHub reponuza göndərilir; başqa "
+                    "kompüterdə proqramı açıb «GitHub-dan yüklə» ilə eyni bazanı götürə bilərsiniz. Hər göndəriş "
+                    "GitHub-da ayrıca versiya kimi qalır. Açıq (Public) repoya göndərilmir.")
+        gi.setObjectName("muted")
+        gi.setWordWrap(True)
+        lg.addWidget(gi)
+        gg = QGridLayout()
+        self.gh_repo = QLineEdit(self.main.settings.data.get("github_repo", ""))
+        self.gh_repo.setPlaceholderText("məs. aliyevik/edv-baza")
+        self.gh_token = QLineEdit(self.main.settings.data.get("github_token", ""))
+        self.gh_token.setEchoMode(QLineEdit.Password)
+        self.gh_token.setPlaceholderText("github_pat_… (yalnız bu repoya «Contents: Read and write» icazəsi)")
+        gg.addWidget(QLabel("Repo:"), 0, 0)
+        gg.addWidget(self.gh_repo, 0, 1)
+        gg.addWidget(QLabel("Token:"), 1, 0)
+        gg.addWidget(self.gh_token, 1, 1)
+        lg.addLayout(gg)
+        hg = QHBoxLayout()
+        for text, fn in (("Yadda saxla və yoxla", self.gh_save), ("İndi GitHub-a göndər", self.gh_push),
+                         ("GitHub-dan bərpa et…", self.gh_restore)):
+            bb = QPushButton(text)
+            bb.clicked.connect(fn)
+            hg.addWidget(bb)
+        hg.addStretch(1)
+        lg.addLayout(hg)
+        self.gh_status = QLabel("")
+        self.gh_status.setWordWrap(True)
+        lg.addWidget(self.gh_status)
+        root.addWidget(cg)
         root.addStretch(1)
         self.reload_companies()
 
@@ -656,12 +917,57 @@ class BasePage(QWidget):
         if v:
             self.main.settings.data["last_company"] = v
             self.main.settings.save()
-        self.refresh()
+        self.refresh(set_period=True)
+        if getattr(self.main, "ready", False):
+            self.run()
 
     def new_company(self):
         r = new_company_dialog(self)
         if r:
             self.reload_companies(r)
+
+    # --- GitHub
+    def gh_save(self):
+        repo, token = self.gh_repo.text().strip(), self.gh_token.text().strip()
+        self.main.settings.data["github_repo"] = repo
+        self.main.settings.data["github_token"] = token
+        self.main.settings.save()
+        self.main.setup_sync()
+        if not repo:
+            self.gh_status.setText("GitHub sinxronizasiyası söndürülüb.")
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            msg = self.main.sync.check()
+        except SyncError as ex:
+            msg = f"⚠ {ex}"
+            self.main.sync.token = ""        # yanlış konfiqurasiya ilə göndərmə
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.gh_status.setText(msg)
+        if msg.startswith("✓") and self.store:
+            self.main.sync.schedule(self.store)
+
+    def gh_push(self):
+        if not (self.store and self.main.sync.configured):
+            QMessageBox.information(self, "GitHub", "Əvvəlcə repo və tokeni yazıb «Yadda saxla və yoxla» basın.")
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self.main.sync.upload(self.store.voen, self.store.data, "(əl ilə)")
+            self.gh_status.setText(f"✓ GitHub-a göndərildi: {dt.datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
+        except SyncError as ex:
+            self.gh_status.setText(f"⚠ {ex}")
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def gh_restore(self):
+        if not self.main.sync.configured:
+            QMessageBox.information(self, "GitHub", "Əvvəlcə repo və tokeni yazıb «Yadda saxla və yoxla» basın.")
+            return
+        v = github_restore_dialog(self, self.main.sync)
+        if v:
+            self.reload_companies(v)
 
     # --- baza və backup
     def update_db_info(self):
@@ -740,15 +1046,15 @@ class BasePage(QWidget):
         dlg.exec()
 
     # --- fayllar
-    def pick(self):
+    def pick(self, expected=None):
         st = self.main.settings
-        paths, _ = QFileDialog.getOpenFileNames(self, "Excel fayllarını seçin",
-                                                st.data.get("last_dir") or os.path.expanduser("~"),
+        title = f"{KIND_NAMES.get(expected, 'Excel')} — faylları seçin" if expected else "Excel fayllarını seçin"
+        paths, _ = QFileDialog.getOpenFileNames(self, title, st.data.get("last_dir") or os.path.expanduser("~"),
                                                 "Excel (*.xlsx *.xlsm)")
         if paths:
             st.data["last_dir"] = os.path.dirname(paths[0])
             st.save()
-            self.add(paths)
+            self.add(paths, expected)
 
     def dragEnterEvent(self, e):
         if e.mimeData().hasUrls():
@@ -757,7 +1063,7 @@ class BasePage(QWidget):
     def dropEvent(self, e):
         self.add([u.toLocalFile() for u in e.mimeData().urls() if u.toLocalFile().lower().endswith((".xlsx", ".xlsm"))])
 
-    def add(self, paths):
+    def add(self, paths, expected=None):
         msgs, errs = [], []
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
@@ -773,6 +1079,10 @@ class BasePage(QWidget):
                 if self.store is None:
                     errs.append(f"{os.path.basename(p)}: əvvəlcə şirkəti (bazanı) seçin və ya yaradın.")
                     continue
+                if expected and f.kind != expected:
+                    errs.append(f"{os.path.basename(p)}: bu fayl «{KIND_NAMES[f.kind]}» faylıdır, bu bölmə isə "
+                                f"«{KIND_NAMES[expected]}» üçündür. Faylı öz bölməsində yükləyin.")
+                    continue
                 if self.store.voen != f.company_voen:
                     errs.append(f"{os.path.basename(p)}: bu fayl «{f.company_name}» (VÖEN {f.company_voen}) şirkətinə "
                                 f"aiddir, açıq baza isə «{self.store.name}» (VÖEN {self.store.voen}). Fayl əlavə "
@@ -783,7 +1093,9 @@ class BasePage(QWidget):
                             f"yenilənən {r['updated']}, artıq bazada olan {r['same']}")
         finally:
             QApplication.restoreOverrideCursor()
-        self.refresh(set_period=True)
+        self.refresh(set_period=not self.main.R)
+        if msgs:
+            self.run()
         if msgs or errs:
             QMessageBox.information(self, "Bazaya əlavə edildi", "\n".join(msgs + ([""] + errs if errs else [])))
 
@@ -796,6 +1108,7 @@ class BasePage(QWidget):
             return
         self.store.delete()
         self.store = None
+        self.main.clear_result()
         self.reload_companies()
 
     # --- ekran
@@ -952,22 +1265,18 @@ class BasePage(QWidget):
                         f"hərəkətlər nəzərə alınaraq hesablanacaq.")
         self.pinfo.setText(txt)
 
-    def run(self):
+    def run(self, *_):
+        """Bazadan yenidən hesabla (dövr dəyişəndə, fayl yüklənəndə, düzəlişdən sonra — avtomatik)."""
         if not self.store:
+            self.main.clear_result()
             return
         a, b = self.period()
         if a > b:
-            QMessageBox.warning(self, "Dövr", "Başlanğıc tarix son tarixdən böyükdür.")
-            return
-        c = self.store.counts()
-        miss = [KIND_NAMES[k] for k in Store.KINDS if not c[k]]
-        if miss and QMessageBox.question(self, "Bazada məlumat natamamdır",
-                                         "Bazada bu növ məlumat yoxdur:\n• " + "\n• ".join(miss) +
-                                         "\n\nYenə də hesablansın?") != QMessageBox.Yes:
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             R = compute(self.store.source_files(), self.store.openings())
+            R.store = self.store
         finally:
             QApplication.restoreOverrideCursor()
         self.main.set_result(R, a, b)
@@ -1283,6 +1592,8 @@ class GridPage(QWidget):
         while self.filter_box.count():
             w = self.filter_box.takeAt(0).widget()
             if w:
+                w.hide()
+                w.setParent(None)
                 w.deleteLater()
         if not hasattr(self.rep, "filter_spec"):
             return
@@ -1353,6 +1664,9 @@ class GridPage(QWidget):
         self.render()
 
     def show_detail(self, ref):
+        if isinstance(ref, tuple) and ref[:1] == ("edit",):
+            self.main.open_edit(ref[1], ref[2])
+            return
         d = self.rep.detail(ref) if self.rep else None
         if not d:
             return
@@ -1531,18 +1845,30 @@ def export_appendix(page: GridPage):
 
 # ===================================================================== əsas pəncərə
 class Main(QMainWindow):
-    PAGES = [
-        ("🗄   Məlumat bazası", None),
-        ("🧮   ƏDV hesablaşması", (Settlement, "ƏDV hesablaşması", "Hesablaşma", None)),
-        ("📤   Təqdim edilən e-qaimə (satış)", (SalesRegister, "Təqdim edilən e-qaimə", "Təqdim edilən e-qaimə", None)),
-        ("📥   Gələn qaimə, Əvəzləşmə (alış)", (PurchaseRegister, "Gələn qaimə, Əvəzləşmə", "Gələn qaimə",
-                                           [("e-taxes «Əlavə 1» faylı", export_appendix)])),
-        ("🏦   Bank əməliyyatları", (BankOps, "Bank əməliyyatları", "Bank əməliyyatları", None)),
-        ("📊   Bank xülasəsi", (BankReport, "Bank xülasəsi", "Bank", None)),
+    # (bölmə başlığı və ya (etiket, spec)); spec None — baza səhifəsi; "tabs" — ƏDV hesabatı
+    NAV = [
+        ("🗄   Şirkət və baza", None),
+        "UÇOT",
+        ("📤   Göndərilən qaimələr", (SalesModule, "Göndərilən qaimələr", "Göndərilən qaimələr", "satis")),
+        ("📥   Gələn qaimələr", (PurchaseModule, "Gələn qaimələr", "Gələn qaimələr", "alis")),
+        ("🏦   Bank", (BankModule, "Bank", "Bank", "bank")),
+        ("💳   ƏDV depozit", (DepositModule, "ƏDV depozit", "ƏDV depozit", "depozit")),
+        ("📊   Bank xülasəsi", (BankReport, "Bank xülasəsi", "Bank xülasəsi", None)),
+        "ƏDV HESABATI",
+        ("🧾   ƏDV hesabatı", "tabs"),
+        "BORCLAR",
         ("📗   Debitor borclar (alıcılar)", (SalesReport, "Debitor borclar (alıcılar)", "Debitor", None)),
         ("📕   Kreditor borclar (təchizatçılar)", (Creditors, "Kreditor borclar (təchizatçılar)", "Kreditor", None)),
         ("🅰   Avans qaimələri", (Advances, "Avans qaimələri", "Avanslar", None)),
+        "NƏZARƏT",
         ("⚠   Yoxlanılmalı", (IssuesReport, "Yoxlanılmalı məqamlar", "Yoxlanılmalı", None)),
+        ("📝   Dəyişikliklər jurnalı", (EditLog, "Dəyişikliklər jurnalı", "Jurnal", None)),
+    ]
+    TABS = [
+        (Settlement, "ƏDV hesablaşması", "Hesablaşma", None),
+        (SalesRegister, "Təqdim edilən e-qaimə", "Təqdim edilən e-qaimə", None),
+        (PurchaseRegister, "Gələn qaimə, Əvəzləşmə", "Gələn qaimə", [("e-taxes «Əlavə 1» faylı", export_appendix)]),
+        (BankOps, "Ödənişlər və aid olduğu qaimələr", "Ödənişlər", None),
     ]
 
     def __init__(self):
@@ -1550,6 +1876,9 @@ class Main(QMainWindow):
         self.settings = Settings()
         store_mod.EXTRA_BACKUP_DIR = self.settings.data.get("backup_dir") or ""
         self.R = None
+        self.ready = False
+        self.sync = GitHubSync("", "")
+        self.setup_sync()
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION} — {DEDICATED_TO} üçün — təqdim edir {PRESENTED_BY}")
         self.setWindowIcon(app_icon())
         self.resize(1400, 860)
@@ -1574,6 +1903,39 @@ class Main(QMainWindow):
                             f"<span style='color:#9FBDE6'>   |   təqdim edir </span><b>{PRESENTED_BY}</b>"
                             f" <span style='color:#DCE8F7'>· {PRESENTED_URL}</span>"))
         v.addWidget(top)
+
+        self.files_page = BasePage(self)
+        bp = self.files_page
+        # ümumi dövr zolağı
+        pbar = QWidget()
+        pbar.setObjectName("pbar")
+        pbar.setAttribute(Qt.WA_StyledBackground, True)
+        pbar.setStyleSheet(f"#pbar{{background:white; border-bottom:1px solid {theme.BORDER};}}")
+        ph = QHBoxLayout(pbar)
+        ph.setContentsMargins(22, 6, 22, 6)
+        lab = QLabel("Hesabat dövrü:")
+        lab.setStyleSheet(f"font-weight:700; color:{theme.NAVY};")
+        ph.addWidget(lab)
+        ph.addWidget(QLabel("ay"))
+        ph.addWidget(bp.month)
+        ph.addWidget(QLabel("və ya"))
+        ph.addWidget(bp.d_from)
+        ph.addWidget(QLabel("–"))
+        ph.addWidget(bp.d_to)
+        self.p_info = QLabel("")
+        self.p_info.setObjectName("muted")
+        ph.addWidget(self.p_info, 1)
+        self.sync_lbl = QLabel("")
+        self.sync_lbl.setObjectName("muted")
+        ph.addWidget(self.sync_lbl)
+        v.addWidget(pbar)
+        self._rt = QTimer(self)
+        self._rt.setSingleShot(True)
+        self._rt.setInterval(350)
+        self._rt.timeout.connect(bp.run)
+        for d in (bp.d_from, bp.d_to):
+            d.dateChanged.connect(lambda *_: self._rt.start())
+
         h = QHBoxLayout()
         h.setSpacing(0)
         v.addLayout(h, 1)
@@ -1581,47 +1943,101 @@ class Main(QMainWindow):
         self.nav.setObjectName("sidebar")
         self.nav.setFixedWidth(270)
         self.stack = QStackedWidget()
-        self.files_page = BasePage(self)
         self.pages = []
-        for label, spec in self.PAGES:
-            QListWidgetItem(label, self.nav)
+        self.row_to_stack = {}
+        for entry in self.NAV:
+            if isinstance(entry, str):
+                it = QListWidgetItem(entry)
+                it.setFlags(Qt.NoItemFlags)
+                f = it.font()
+                f.setBold(True)
+                f.setPointSizeF(8.5)
+                it.setFont(f)
+                it.setForeground(QBrush(QColor(theme.BLUE)))
+                self.nav.addItem(it)
+                continue
+            label, spec = entry
+            self.nav.addItem(QListWidgetItem(label))
+            row = self.nav.count() - 1
             if spec is None:
-                self.stack.addWidget(self.files_page)
+                w = bp
+            elif spec == "tabs":
+                w = QTabWidget()
+                w.setDocumentMode(True)
+                w.setStyleSheet("QTabBar::tab{padding:8px 18px; font-weight:600;}")
+                for cls, title, sheet, extra in self.TABS:
+                    p = GridPage(self, cls, title, sheet, extra)
+                    self.pages.append(p)
+                    w.addTab(p, title)
             else:
-                cls, title, sheet, extra = spec
-                p = GridPage(self, cls, title, sheet, extra)
-                self.pages.append(p)
-                self.stack.addWidget(p)
+                cls, title, sheet, kind = spec
+                extra = None
+                if kind:
+                    extra = [("⬆ Fayl yüklə", lambda pg, k=kind: self.files_page.pick(k))]
+                    if kind in ("satis", "alis"):
+                        extra.append(("＋ Əl ilə əlavə et", lambda pg, k=kind: self.add_manual(k)))
+                w = GridPage(self, cls, title, sheet, extra)
+                self.pages.append(w)
+            self.stack.addWidget(w)
+            self.row_to_stack[row] = self.stack.count() - 1
         self.nav.currentRowChanged.connect(self._nav)
         self.nav.setCurrentRow(0)
         h.addWidget(self.nav)
         h.addWidget(self.stack, 1)
-        self._update_nav()
+        self._st = QTimer(self)
+        self._st.timeout.connect(lambda: self.sync_lbl.setText(self.sync.status if self.sync.configured else ""))
+        self._st.start(2000)
+        self.ready = True
+        QTimer.singleShot(0, bp.run)
 
+    # --- GitHub
+    def setup_sync(self):
+        self.sync.repo = self.settings.data.get("github_repo", "")
+        self.sync.token = self.settings.data.get("github_token", "")
+        store_mod.SAVE_HOOK = lambda st: self.sync.schedule(st) if self.sync.configured else None
+
+    # --- naviqasiya
     def _nav(self, i):
-        if i > 0 and self.R is None:
-            self.nav.blockSignals(True)
-            self.nav.setCurrentRow(0)
-            self.nav.blockSignals(False)
-            QMessageBox.information(self, APP_NAME, "Əvvəlcə «Məlumat bazası» səhifəsində dövrü seçib «Hesabla» düyməsini basın.")
+        if i not in self.row_to_stack:
             return
-        self.stack.setCurrentIndex(i)
+        self.stack.setCurrentIndex(self.row_to_stack[i])
 
-    def _update_nav(self):
-        for i in range(1, self.nav.count()):
-            it = self.nav.item(i)
-            it.setForeground(QBrush(QColor(theme.TEXT if self.R else "#9AA6B5")))
+    def clear_result(self):
+        self.R = None
+        self.comp.setText("")
+        for p in self.pages:
+            p.rep = None
+            p.grid = None
+            p.table.setRowCount(0)
+            p.table.setColumnCount(0)
+            p.info.setText("Şirkət seçilməyib və ya bazada məlumat yoxdur.")
 
     def set_result(self, R, a, b):
         self.R, self.a, self.b = R, a, b
-        self.comp.setText(f"<span style='color:#DCE8F7'>{R.company_name} · VÖEN {R.company_voen} · "
-                          f"{fmt_date(a)} – {fmt_date(b)}</span>")
+        self.comp.setText(f"<span style='color:#DCE8F7'>{R.company_name} · VÖEN {R.company_voen}</span>")
+        self.p_info.setText(f"{fmt_date(a)} – {fmt_date(b)}  ·  dövrü dəyişəndə bütün bölmələr avtomatik yenilənir")
         for p in self.pages:
             p.load(R, a, b)
-        n_iss = len(self.pages[-1].rep.items)
-        self.nav.item(len(self.PAGES) - 1).setText(f"⚠   Yoxlanılmalı ({n_iss})")
-        self._update_nav()
-        self.nav.setCurrentRow(1)
+        for i in range(self.nav.count()):
+            if self.nav.item(i).text().startswith("⚠"):
+                n_iss = len([x for x in R.issues if x.date is None or a <= x.date <= b])
+                self.nav.item(i).setText(f"⚠   Yoxlanılmalı ({n_iss})")
+
+    # --- redaktə / əl ilə əlavə
+    def open_edit(self, kind, key):
+        st = self.files_page.store
+        if not st:
+            return
+        if edit_dialog(self, st, kind, key):
+            self.files_page.run()
+
+    def add_manual(self, kind):
+        st = self.files_page.store
+        if not st:
+            return
+        if edit_dialog(self, st, kind, None):
+            self.files_page.refresh()
+            self.files_page.run()
 
 
 def run():
