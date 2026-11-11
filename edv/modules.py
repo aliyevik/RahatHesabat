@@ -15,7 +15,7 @@ from .reports import mkey, n, t
 from .reports2 import mshort as _mfull
 
 KIND_TITLES = {"satis": "Göndərilən qaimələr", "alis": "Gələn qaimələr", "bank": "Bank əməliyyatları",
-               "depozit": "ƏDV depozit əməliyyatları"}
+               "depozit": "ƏDV depozit əməliyyatları", "yoxlama": "Yoxlanılmalı"}
 FIELD_NAMES = {"date": "Tarix", "voen": "VÖEN", "name": "Kontragent", "status": "Status", "edvsiz": "ƏDV-siz",
                "edv": "ƏDV", "yekun": "Yekun", "note": "Qeyd", "cp_voen": "VÖEN", "cp_name": "Qarşı tərəf",
                "amount": "Məbləğ", "teyinat": "Təyinat", "category": "Kateqoriya", "medaxil": "Mədaxil",
@@ -172,10 +172,10 @@ class EditLog(_Module):
         return []
 
     def grid(self, signature):
-        heads = ["Vaxt", "Bölmə", "Sənəd", "Sahə", "Köhnə dəyər", "Yeni dəyər", "Səbəb"]
+        heads = ["Vaxt", "İstifadəçi", "Bölmə", "Sənəd", "Sahə", "Köhnə dəyər", "Yeni dəyər", "Səbəb"]
         g = Grid(title=f"{self.R.company_name} · VÖEN {self.R.company_voen}",
                  subtitle="Dəyişikliklər jurnalı — sənədlərdə edilən bütün düzəlişlər", ncols=len(heads),
-                 col_widths=[1.5, 1.8, 2.2, 1.6, 2.2, 2.2, 4.0], signature=signature)
+                 col_widths=[1.5, 1.4, 1.8, 2.2, 1.6, 2.2, 2.2, 4.0], signature=signature)
         g.head_rows = [[t(h, HEAD, "center") for h in heads]]
         log = list(reversed((self.store.data.get("edit_log", []) if self.store else [])))
         hist = list(reversed((self.store.data.get("openings_history", []) if self.store else [])))
@@ -194,13 +194,13 @@ class EditLog(_Module):
                     return v
             return str(v)
         for e in log:
-            g.rows.append([t(e["at"], ITEM, "center"), t(KIND_TITLES.get(e["kind"], e["kind"])),
+            g.rows.append([t(e["at"], ITEM, "center"), t(e.get("user", "")), t(KIND_TITLES.get(e["kind"], e["kind"])),
                            t(e.get("label") or e["key"]), t(FIELD_NAMES.get(e["field"], e["field"])),
                            t(val(e["field"], e["old"])), t(val(e["field"], e["new"])), t(e.get("reason", ""))])
         for e in hist:
-            g.rows.append([t(e["at"], ITEM, "center"), t("İlkin qalıqlar"), t(""), t(e["action"]), t(""),
+            g.rows.append([t(e["at"], ITEM, "center"), t(e.get("user", "")), t("İlkin qalıqlar"), t(""), t(e["action"]), t(""),
                            t(e.get("detail", "")[:120]), t("")])
         if not log and not hist:
-            g.rows.append([Cell("Hələ düzəliş edilməyib", ITEM, align="left", colspan=7)] + [None] * 6)
+            g.rows.append([Cell("Hələ düzəliş edilməyib", ITEM, align="left", colspan=8)] + [None] * 7)
         g.top_lines = [("Düzəliş sayı:", str(len(log)))]
         return g

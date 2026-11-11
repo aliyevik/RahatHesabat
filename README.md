@@ -32,7 +32,7 @@ python main.py
 
 ---
 
-# ƏDV Hesabatı (İntiqam Əliyev üçün — təqdim edir FMC)
+# ƏDV Hesabatı (təqdim edir FMC)
 
 Ayrıca proqram (`EDV_Hesabati.exe`, kodu `edv/` qovluğunda). e-taxes-dan alınan alış və satış
 qaimələri, ƏDV depozit çıxarışı və Kapital Bank çıxarışı olduğu kimi yüklənir; şirkət VÖEN-i fayllardan
@@ -74,3 +74,11 @@ oxunur və bütün faylların eyni şirkətə aid olduğu yoxlanılır.
 * Dövr seçimi pəncərənin yuxarısındadır; dəyişəndə bütün bölmələr avtomatik yenilənir.
 * **GitHub**: baza sıxılmış şəkildə gizli (Private) repoya avtomatik göndərilir (`baza/<VÖEN>.json.gz`),
   başqa kompüterdə «GitHub-dan yüklə». Açıq repoya göndərilmir.
+
+### v3.1
+* Giriş: istifadəçi + şəxsi kod (ilk istifadəçi — admin). Şirkətlər kartlarla; admin istifadəçi əlavə edir və
+  şirkətlərə giriş verir. Jurnalda hər düzəlişin istifadəçisi yazılır.
+* «Yoxlanılmalı»: məqamı kodla «OK» etmək (siyahıdan çıxır, «OK edilənlər»də qalır, geri açmaq olar).
+* Hesablaşma: hesablanmış ƏDV = banka görə ƏDV (gələn pul × 18%) ilə depozitə gələn ƏDV-dən böyük olanı;
+  ƏDV-dən azad / 0% qaimələr ayrıca sətirdə.
+* Reyestrlərdə hər ödəniş bank və ƏDV ilə bir sətirdə, tarix bankdan.

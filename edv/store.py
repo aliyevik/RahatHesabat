@@ -25,6 +25,7 @@ _CODE_HASH = "ad5a17f5b6980e9eb309bd2edd01e9bb291070c03a451a44ea4fad1726a545a5"
 EXTRA_BACKUP_DIR = ""
 KEEP_BACKUPS = 40
 SAVE_HOOK = lambda store: None   # GUI GitHub sinxronizasiyasını burada qoşur
+CURRENT_USER = ""                # daxil olmuş istifadəçi (jurnal üçün)
 
 
 def check_code(code: str) -> bool:
@@ -176,7 +177,8 @@ class Store:
 
     def log(self, action: str, detail: str = ""):
         self.data.setdefault("openings_history", []).append(
-            {"at": dt.datetime.now().strftime("%d.%m.%Y %H:%M:%S"), "action": action, "detail": detail})
+            {"at": dt.datetime.now().strftime("%d.%m.%Y %H:%M:%S"), "action": action, "detail": detail,
+             "user": CURRENT_USER})
 
     def delete(self):
         if os.path.exists(self.path):
@@ -247,7 +249,7 @@ class Store:
                 continue
             ed[f] = new
             log.append({"at": now, "kind": kind, "key": key, "label": label or key, "field": f,
-                        "old": old, "new": new, "reason": reason})
+                        "old": old, "new": new, "reason": reason, "user": CURRENT_USER})
         if not ed:
             self.edits(kind).pop(key, None)
         self.save()
@@ -261,7 +263,8 @@ class Store:
         self.data[kind][k] = d
         self.data.setdefault("edit_log", []).append({
             "at": dt.datetime.now().strftime("%d.%m.%Y %H:%M:%S"), "kind": kind, "key": k, "label": k,
-            "field": "(əl ilə əlavə edildi)", "old": None, "new": f"{getattr(item, 'yekun', '')}", "reason": reason})
+            "field": "(əl ilə əlavə edildi)", "old": None, "new": f"{getattr(item, 'yekun', '')}", "reason": reason,
+            "user": CURRENT_USER})
         self.save()
         return k
 
@@ -298,6 +301,19 @@ class Store:
 
     def counts(self) -> dict:
         return {k: len(self.data[k]) for k in self.KINDS}
+
+    # ---- «Yoxlanılmalı» məqamlarının OK edilməsi
+    def ack(self, key: str, note: str, undo: bool = False):
+        acks = self.data.setdefault("ok_issues", {})
+        now = dt.datetime.now().strftime("%d.%m.%Y %H:%M")
+        if undo:
+            acks.pop(key, None)
+        else:
+            acks[key] = {"user": CURRENT_USER, "at": now, "note": note}
+        self.data.setdefault("edit_log", []).append({
+            "at": now, "kind": "yoxlama", "key": key, "label": key.split("|")[0], "field": "OK" if not undo else "OK geri alındı",
+            "old": None, "new": note, "reason": note, "user": CURRENT_USER})
+        self.save()
 
     def on_saved(self):
         """GUI tərəfindən təyin olunur (GitHub sinxronizasiyası üçün)."""

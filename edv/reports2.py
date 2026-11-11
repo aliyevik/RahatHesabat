@@ -18,11 +18,23 @@ def mshort(m) -> str:
 
 
 def _pays_by_date(allocs):
-    """Qaimə üzrə ödənişlər tarix üzrə: [(tarix, bank, ƏDV)]"""
-    d = defaultdict(lambda: [0.0, 0.0])
+    """Qaimə üzrə ödənişlər: [(tarix, bank, ƏDV)] — hər bank ödənişi öz ƏDV-si ilə bir sətirdə,
+    tarix bankdan götürülür (ƏDV üçün ayrıca tarix yoxdur). ƏDV-lər bank ödənişlərinə sıra ilə qoşulur."""
+    bank = defaultdict(float)
+    vat = defaultdict(float)
     for x in allocs:
-        d[x.pay.date][0 if x.kind == "net" else 1] += x.amount
-    return [(k, v[0], v[1]) for k, v in sorted(d.items())]
+        (bank if x.kind == "net" else vat)[x.pay.date] += x.amount
+    b = sorted(bank.items())
+    v = sorted(vat.items())
+    out = [[d, a, 0.0] for d, a in b]
+    for i, (d, a) in enumerate(v):
+        if i < len(out):
+            out[i][2] += a
+        elif out:
+            out[-1][2] += a
+        else:
+            out.append([d, 0.0, a])
+    return [tuple(x) for x in out]
 
 
 # ================================================================= Təqdim edilən e-qaimə (satış)
@@ -50,12 +62,12 @@ class SalesRegister:
 
     def grid(self, signature):
         heads = [("Kontragent", ["№", "Vergitutma ayı", "VÖEN", "Alıcı"]),
-                 ("E-QAİMƏ", ["Tarix", "Göndərilmə ayı", "Seriya", "Nömrə", "Ümumi məbləğ (ƏDV daxil)", "ƏDV 18%",
-                              "Məbləğ ƏDV xaric", "Məbləğ 0% / azad"]),
-                 ("Ödənişlər", ["Bank-1", "ƏDV-1", "Tarix-1", "Bank-2", "ƏDV-2", "Tarix-2", "Digər ödənişlər"]),
-                 ("Qalıq", ["Debitor borc — əsas (ƏDV xaric)", "Debitor borc — ƏDV"])]
+                 ("E-QAİMƏ", ["Tarix", "Ay", "Seriya", "Nömrə", "Yekun", "ƏDV",
+                              "ƏDV-siz", "0% / azad"]),
+                 ("Ödənişlər (tarix — bankdan)", ["Bank-1", "ƏDV-1", "Tarix-1", "Bank-2", "ƏDV-2", "Tarix-2", "Digər"]),
+                 ("Qalıq (debitor)", ["Əsas", "ƏDV"])]
         nc = sum(len(s) for _, s in heads)
-        widths = [0.5, 1.2, 1.1, 3.0, 1.0, 1.2, 0.9, 1.0, 1.2, 1.0, 1.15, 1.0] + [1.0, 0.9, 1.0] * 2 + [1.1, 1.2, 1.1]
+        widths = [0.5, 1.2, 1.1, 2.8, 1.0, 1.1, 0.9, 1.0, 1.1, 1.0, 1.1, 1.0] + [1.0, 0.9, 1.0] * 2 + [1.0, 1.1, 1.0]
         g = Grid(title=f"{self.R.company_name} · VÖEN {self.R.company_voen}",
                  subtitle=f"{fmt_date(self.a)} – {fmt_date(self.b)} · Təqdim edilən e-qaimələr (satış)",
                  ncols=nc, col_widths=widths, signature=signature)
@@ -130,10 +142,10 @@ class PurchaseRegister(Offset):
 
     def grid(self, signature):
         heads = [("Kontragent", ["№", "Vergitutma ayı", "VÖEN", "Satıcı"]),
-                 ("E-QAİMƏ", ["Tarix", "Gəlmə ayı", "Seriya", "Nömrə", "Ümumi məbləğ (ƏDV daxil)", "ƏDV 18%",
-                              "Məbləğ ƏDV xaric", "Yol vergisi", "ƏDV-dən azad", "0% dərəcə"]),
-                 ("Ödənişlər", ["Bank (əsas)", "ƏDV (depozit)", "Tarix"]),
-                 ("Qalıq", ["Kreditor borc — əsas (ƏDV xaric)", "Kreditor borc — ƏDV"]),
+                 ("E-QAİMƏ", ["Tarix", "Gəlmə ayı", "Seriya", "Nömrə", "Yekun", "ƏDV",
+                              "ƏDV-siz", "Yol vergisi", "Azad", "0%"]),
+                 ("Ödənişlər (tarix — bankdan)", ["Bank", "ƏDV", "Tarix"]),
+                 ("Qalıq (kreditor)", ["Əsas", "ƏDV"]),
                  ("Əvəzləşmə", ["Əvəzləşmə dövrü", "Status"])]
         nc = sum(len(s) for _, s in heads)
         widths = [0.5, 1.4, 1.1, 3.0, 1.0, 1.2, 0.9, 1.0, 1.2, 1.0, 1.15, 0.9, 0.9, 0.9, 1.1, 1.0, 1.6, 1.2, 1.1, 1.3, 1.6]
@@ -170,7 +182,7 @@ class PurchaseRegister(Offset):
             al = [x for x in self.by_inv[id(i)] if x.date <= self.b]
             pn = sum(x.amount for x in al if x.kind == "net")
             pv = sum(x.amount for x in al if x.kind == "vat")
-            dates = sorted({x.pay.date for x in al})
+            dates = sorted({x.pay.date for x in al if x.kind == "net"}) or sorted({x.pay.date for x in al})
             dtxt = ", ".join(fmt_date(d)[:5] for d in dates[:3]) + (" …" if len(dates) > 3 else "")
             if dates:
                 dtxt += f".{dates[-1].year}"
@@ -240,12 +252,18 @@ class Settlement:
                  and inp(i.date)]
         al = [x for x in R.allocs if inp(x.date) and x.invoice.status_group == "tesdiq" and not x.invoice.is_opening]
         v = {}
-        v["s_net"] = sum(i.yekun - i.edv for i in sales)
-        v["s_vat"] = sum(i.edv for i in sales)
-        v["recv"] = sum(r.op.amount for r in R.bank if r.category == IN_SALES and inp(r.op.date))
+        s18 = [i for i in sales if i.edv > 0.004]
+        s0 = [i for i in sales if i.edv <= 0.004]
+        v["s_net"] = sum(i.yekun - i.edv for i in s18)
+        v["s_vat"] = sum(i.edv for i in s18)
+        v["s0"] = sum(i.yekun for i in s0)
+        recv_all = sum(r.op.amount for r in R.bank if r.category == IN_SALES and inp(r.op.date))
+        v["recv0"] = sum(x[2] for x in R.taxable0 if inp(x[0]))
+        v["recv"] = recv_all - v["recv0"]
         v["dep_in"] = sum(o.medaxil for o in R.deposit if o.medaxil and o.executed and inp(o.date))
-        v["tax"] = sum(x[2] for x in R.taxable if inp(x[0]))
-        v["hes"] = v["tax"] * VAT_RATE
+        v["bank_vat"] = v["recv"] * VAT_RATE
+        v["vat_diff"] = v["bank_vat"] - v["dep_in"]
+        v["hes"] = max(v["bank_vat"], v["dep_in"])
         deb = 0.0
         for vv in {i.voen for i in R.sales}:
             ev = [e for e in self.deb._events(vv) if e[0] <= b]
@@ -280,22 +298,25 @@ class Settlement:
                 carry += x["due"] - x["paid"]
         rows = [
             ("Satış — göndərilən qaimələr (yalnız MT)", None, None),
-            ("Satış dövriyyəsi — əsas məbləğ (ƏDV-siz)", "s_net", ITEM),
-            ("Satış dövriyyəsi — ƏDV", "s_vat", ITEM),
-            ("Banka daxil olan pul (alıcılardan)", "recv", ITEM),
-            ("ƏDV depozitə daxil olan ƏDV", "dep_in", ITEM),
-            ("ƏDV-yə cəlb olunan məbləğ (bank və ya ƏDV÷18%)", "tax", RESULT),
-            ("Hesablanmış ƏDV (cəlb olunan × 18%)", "hes", RESULT),
+            ("Göndərilən qaimələr (ƏDV 18%) — əsas məbləğ", "s_net", ITEM),
+            ("Göndərilən qaimələr (ƏDV 18%) — ƏDV", "s_vat", ITEM),
+            ("Göndərilən qaimələr — ƏDV-dən azad / 0% (ayrıca)", "s0", ITEM),
+            ("Şirkətlərdən banka gələn pul (ƏDV-li qaimələr üzrə)", "recv", ITEM),
+            ("ƏDV-dən azad / 0% qaimələr üzrə banka gələn pul", "recv0", ITEM),
+            ("Banka görə ƏDV (banka gələn pul × 18%)", "bank_vat", ITEM),
+            ("ƏDV depozitinə görə ƏDV (depozitə gələn ƏDV)", "dep_in", ITEM),
+            ("Fərq: banka görə − depozitə görə", "vat_diff", ITEM),
+            ("Hesablanmış ƏDV (ikisindən böyük olanı)", "hes", RESULT),
             ("Debitor borc — əsas (ay sonuna)", "deb", ITEM),
             ("Alış — gələn qaimələr (yalnız MT, təsdiqlənmiş)", None, None),
             ("Alış dövriyyəsi — əsas məbləğ (ƏDV-siz)", "p_net", ITEM),
             ("Alış dövriyyəsi — ƏDV", "p_vat", ITEM),
             ("Ödənilmiş qaimələr — bankdan (əsas)", "paid_net", ITEM),
-            ("Ödənilmiş qaimələr — depozitdən ƏDV = əvəzləşən ƏDV", "off", RESULT),
+            ("Əvəzləşən ƏDV (ödənilmiş gələn qaimələrin depozitdən ödənilən ƏDV-si)", "off", RESULT),
             ("Nəticə", None, None),
             ("Hesablanmış ƏDV", "hes", ITEM),
-            ("Əvəzləşən ƏDV (−)", "off_neg", ITEM),
-            ("Büdcəyə ödənilməlidir (+) / qaytarılır (−)", "due", RESULT),
+            ("Əvəzləşən ƏDV (çıxılır)", "off_neg", ITEM),
+            ("Büdcəyə ödənilməlidir (+) / qaytarılır (−) = hesablanmış − əvəzləşən", "due", RESULT),
             ("Ödənilmiş ƏDV (depozitdən büdcəyə)", "paid", ITEM),
         ]
         for label, key, st in rows:
@@ -323,7 +344,9 @@ class Settlement:
                        ("Əvəzləşən ƏDV:", round(sum(x["off"] for x in V), 2)),
                        ("Büdcəyə ödənilməli (+) / qaytarılır (−):", round(tot_due, 2)),
                        ("Növbəti dövrə keçən qalıq:", round(c, 2))]
-        g.footnote = ("Dövriyyə — yalnız MT qaimələri (avans qaimələri daxil deyil). Gələn pul — bank hesabına, ƏDV — "
+        g.footnote = ("Hesablanmış ƏDV = banka görə ƏDV (alıcılardan banka gələn pul × 18%) ilə ƏDV depozitinə gələn "
+                      "ƏDV-dən böyük olanı. ƏDV-dən azad / 0% qaimələr və onlara gələn pul ayrıca sətirdədir, 18%-ə "
+                      "vurulmur. Dövriyyə — yalnız MT qaimələri. Gələn pul — bank hesabına, ƏDV — "
                       "ƏDV depozitə daxil olan; ödənilmiş alış qaimələrinin depozitdən ödənilən ƏDV-si əvəzləşir. "
                       "Cəlb olunan məbləğ pulun daxil olduğu aya aid edilir; ƏDV depozitə gələn ƏDV "
                       "bankdakı puldan çoxdursa, baza ƏDV÷18% götürülür. Qalıq: müsbət — büdcəyə borc, mənfi — artıq "
@@ -341,8 +364,9 @@ class Settlement:
         inp = lambda d: a <= d <= b
         when = mlabel(m) if m else f"{fmt_date(self.a)} – {fmt_date(self.b)}"
         name = lambda v: R.parties[v].name if v in R.parties else v
-        if key in ("s_net", "s_vat"):
-            items = [i for i in R.sales if id(i) in R.base and not i.is_advance and not i.is_opening and inp(i.date)]
+        if key in ("s_net", "s_vat", "s0"):
+            items = [i for i in R.sales if id(i) in R.base and not i.is_advance and not i.is_opening and inp(i.date)
+                     and ((i.edv <= 0.004) == (key == "s0"))]
             return Detail("Satış dövriyyəsi — MT qaimələri", when,
                           ["Tarix", "Qaimə", "Alıcı", "VÖEN", "Əsas (ƏDV-siz)", "ƏDV", "Yekun"],
                           [[fmt_date(i.date), i.number, i.name, i.voen, i.yekun - i.edv, i.edv, i.yekun] for i in items],
@@ -354,11 +378,16 @@ class Settlement:
                           ["Tarix", "Qaimə", "Satıcı", "VÖEN", "Əsas (ƏDV-siz)", "ƏDV", "Yekun"],
                           [[fmt_date(i.date), i.number, i.name, i.voen, i.yekun - i.edv, i.edv, i.yekun] for i in items],
                           {4, 5, 6}, [("Əsas", sum(i.yekun - i.edv for i in items)), ("ƏDV", sum(i.edv for i in items))])
-        if key == "recv":
+        if key in ("recv", "bank_vat", "vat_diff"):
             items = [r for r in R.bank if r.category == IN_SALES and inp(r.op.date)]
-            return Detail("Banka daxil olan pul (alıcılardan)", when, ["Tarix", "Alıcı", "VÖEN", "Təyinat", "Məbləğ"],
+            return Detail("Şirkətlərdən banka gələn pul", when, ["Tarix", "Alıcı", "VÖEN", "Təyinat", "Məbləğ"],
                           [[fmt_date(r.op.date), r.name, r.op.cp_voen, r.op.teyinat, r.op.amount] for r in items], {4},
                           [("Cəmi", sum(r.op.amount for r in items))])
+        if key == "recv0":
+            items = [x for x in R.taxable0 if inp(x[0])]
+            return Detail("ƏDV-dən azad / 0% qaimələr üzrə banka gələn pul", when, ["Tarix", "Alıcı", "VÖEN", "Məbləğ"],
+                          [[fmt_date(x[0]), name(x[1]), x[1], x[2]] for x in items], {3},
+                          [("Cəmi", sum(x[2] for x in items))])
         if key == "dep_in":
             items = [o for o in R.deposit if o.medaxil and o.executed and inp(o.date)]
             return Detail("ƏDV depozitə daxil olan ƏDV", when, ["Tarix", "Kimdən", "VÖEN", "Təyinat", "Məbləğ"],

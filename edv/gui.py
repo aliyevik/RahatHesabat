@@ -29,14 +29,16 @@ from rahat.layout import Grid, drop_columns, leaf_headers
 from rahat.gui import QSS, BluePanel, ReportTable, back_button, card, cell_text, parse_amount, pydate, qdate
 from rahat.model import fmt_date, fmt_money
 
-from . import APP_NAME, APP_VERSION, DEDICATED_TO, PRESENTED_BY, PRESENTED_URL
+from . import APP_NAME, APP_VERSION, PRESENTED_BY, PRESENTED_URL
 from .engine import compute, short_name
 from . import store as store_mod
 from .store import Store, base_dir, check_code, list_bases
 from .cloud import GitHubSync, SyncError
+from .users import Users
 from .parsers import ParseError, load
 from .reports2 import BankOps, PurchaseRegister, SalesRegister, Settlement
 from .modules import BankModule, DepositModule, EditLog, PurchaseModule, SalesModule
+from .reports import issue_key
 from .reports import (Advances, BankReport, Creditors, Debtors, IssuesReport, Offset, SalesReport, Summary, mlabel,
                       months_between)
 
@@ -98,18 +100,6 @@ class Welcome(QWidget):
         line = QFrame()
         line.setFixedSize(64, 4)
         line.setStyleSheet(f"background:{theme.BLUE}; border-radius:2px;")
-        ded = QFrame()
-        ded.setStyleSheet(f"QFrame{{background:{theme.BLUE_PALE}; border:1px solid {theme.BLUE_LIGHT};"
-                          f"border-left:4px solid {theme.BLUE}; border-radius:6px;}}"
-                          "QLabel{border:none; background:transparent;}")
-        dlay = QVBoxLayout(ded)
-        dlay.setContentsMargins(16, 10, 16, 10)
-        d1 = QLabel("Xüsusi olaraq hazırlanmışdır")
-        d1.setStyleSheet(f"color:{theme.MUTED}; font-size:9.5pt;")
-        d2 = QLabel(f"{DEDICATED_TO} üçün")
-        d2.setStyleSheet(f"color:{theme.NAVY}; font-size:16pt; font-weight:700;")
-        dlay.addWidget(d1)
-        dlay.addWidget(d2)
         feats = QLabel("1.  Faylları atın — e-taxes və bankdan endirdiyiniz Excel-lər, olduğu kimi\n"
                        "2.  VÖEN və ad yoxlanılır, ödənişlər qaimələrə FIFO ilə bağlanır\n"
                        "3.  Hesablanmış və əvəzləşdirilən ƏDV — aylar üzrə\n"
@@ -125,9 +115,7 @@ class Welcome(QWidget):
             ll.addWidget(w)
         ll.addSpacing(10)
         ll.addWidget(line)
-        ll.addSpacing(16)
-        ll.addWidget(ded)
-        ll.addSpacing(14)
+        ll.addSpacing(22)
         ll.addWidget(feats)
         ll.addStretch(1)
         hb = QHBoxLayout()
@@ -418,58 +406,268 @@ def new_company_dialog(parent) -> str | None:
     return result.get("v")
 
 
-class CompanyPicker(QDialog):
-    """Proqram açılanda: şirkəti (bazanı) seç və ya yenisini yarat."""
+class LoginDialog(QDialog):
+    """Giriş: istifadəçi + kod. İlk dəfə — ilk istifadəçi (admin) yaradılır."""
 
-    def __init__(self, parent=None, current=""):
-        super().__init__(parent)
-        self.setWindowTitle(f"{APP_NAME} {APP_VERSION} — istifadəçi (şirkət) seçimi")
+    def __init__(self, users: Users):
+        super().__init__()
+        self.users = users
+        self.user = None
+        self.setWindowTitle(f"{APP_NAME} {APP_VERSION} — giriş")
         self.setWindowIcon(app_icon())
-        self.resize(700, 440)
-        self.chosen = None
+        self.resize(460, 300)
         lay = QVBoxLayout(self)
-        t = QLabel("İstifadəçi (şirkət) və baza seçin")
+        first = not users.users
+        t = QLabel("İlk istifadəçini yaradın" if first else "Daxil olun")
         t.setObjectName("pageTitle")
         lay.addWidget(t)
-        s = QLabel("Hər istifadəçinin (şirkətin, məs. İNFLOR, Rahat Yaşam) məlumatı ayrıca bazada saxlanılır. "
-                   "Kimin bazası ilə işləyəcəyinizi seçin və ya «Yeni istifadəçi (baza) yarat» ilə yenisini yaradın.")
+        s = QLabel("Bu istifadəçi ADMİN olacaq: şirkət bazaları yarada və başqa istifadəçilər əlavə edə bilər. "
+                   "Kod girişdə, «OK» qeydlərində və ilkin qalıqları dəyişəndə soruşulacaq — unutmayın."
+                   if first else "İstifadəçini seçin və şəxsi kodunuzu yazın.")
         s.setObjectName("muted")
         s.setWordWrap(True)
         lay.addWidget(s)
-        self.lst = QListWidget()
-        self.lst.itemDoubleClicked.connect(lambda _: self.open())
-        lay.addWidget(self.lst, 1)
+        g = QGridLayout()
+        if first:
+            self.name = QLineEdit()
+            self.name.setPlaceholderText("məs. Ad Soyad")
+            g.addWidget(QLabel("Ad:"), 0, 0)
+            g.addWidget(self.name, 0, 1)
+        else:
+            self.name = QComboBox()
+            self.name.addItems(users.names())
+            last = Settings().data.get("last_user", "")
+            if last in users.names():
+                self.name.setCurrentText(last)
+            g.addWidget(QLabel("İstifadəçi:"), 0, 0)
+            g.addWidget(self.name, 0, 1)
+        self.code = QLineEdit()
+        self.code.setEchoMode(QLineEdit.Password)
+        g.addWidget(QLabel("Kod:"), 1, 0)
+        g.addWidget(self.code, 1, 1)
+        self.code2 = QLineEdit()
+        self.code2.setEchoMode(QLineEdit.Password)
+        if first:
+            g.addWidget(QLabel("Kodu təkrarlayın:"), 2, 0)
+            g.addWidget(self.code2, 2, 1)
+        lay.addLayout(g)
+        lay.addStretch(1)
+        b = QPushButton("Yarat və daxil ol  →" if first else "Daxil ol  →")
+        b.setObjectName("primary")
+        b.setMinimumHeight(38)
+        b.clicked.connect(self.ok)
+        self.code.returnPressed.connect(self.ok)
+        lay.addWidget(b)
+        self.first = first
+
+    def ok(self):
+        if self.first:
+            if self.code.text() != self.code2.text():
+                QMessageBox.warning(self, "Kod", "Kodlar eyni deyil.")
+                return
+            try:
+                self.users.add(self.name.text(), self.code.text(), role="admin")
+            except ValueError as ex:
+                QMessageBox.warning(self, "Düzəldin", str(ex))
+                return
+            self.user = self.name.text().strip()
+        else:
+            n = self.name.currentText()
+            if not self.users.check(n, self.code.text()):
+                QMessageBox.warning(self, "Kod yanlışdır", "İstifadəçi kodu yanlışdır.")
+                self.code.clear()
+                return
+            self.user = n
+        st = Settings()
+        st.data["last_user"] = self.user
+        st.save()
+        self.accept()
+
+
+def ask_code(parent, users: Users, user: str, title: str, text: str, allow_master: bool = False) -> bool:
+    code, ok = QInputDialog.getText(parent, title, text + f"\n\nİstifadəçi: {user} — kodunuzu daxil edin:",
+                                    QLineEdit.Password)
+    if not ok:
+        return False
+    if users.check(user, code) or (allow_master and check_code(code)):
+        return True
+    QMessageBox.warning(parent, "Kod yanlışdır", "Kod yanlışdır. Əməliyyat edilmədi.")
+    return False
+
+
+class UsersDialog(QDialog):
+    """Admin: istifadəçilər və onların şirkətlərə girişi."""
+
+    def __init__(self, parent, users: Users, voen: str | None = None):
+        super().__init__(parent)
+        self.users, self.voen = users, voen
+        self.setWindowTitle("İstifadəçilər" + (f" — VÖEN {voen}" if voen else ""))
+        self.resize(720, 420)
+        lay = QVBoxLayout(self)
+        self.tbl = QTableWidget(0, 4)
+        self.tbl.setHorizontalHeaderLabels(["Ad", "Rol", "Şirkətlər", "Yaradılıb"])
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        lay.addWidget(self.tbl, 1)
         hb = QHBoxLayout()
-        b_new = QPushButton("＋ Yeni istifadəçi (şirkət bazası) yarat")
-        b_new.clicked.connect(self.create)
-        b_open = QPushButton("Aç  →")
-        b_open.setObjectName("primary")
-        b_open.clicked.connect(self.open)
-        hb.addWidget(b_new)
-        b_gh = QPushButton("⬇ GitHub-dan yüklə")
-        b_gh.setToolTip("Başqa kompüterdə yaradılmış bazanı gizli GitHub reposundan götür")
-        b_gh.clicked.connect(self.from_github)
-        hb.addWidget(b_gh)
+        for text, fn in (("＋ Yeni istifadəçi", self.add), ("Bu şirkətə giriş ver", self.grant),
+                         ("Kodu dəyiş", self.change_code), ("Sil", self.remove)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            if text == "Bu şirkətə giriş ver" and not voen:
+                b.setVisible(False)
+            hb.addWidget(b)
         hb.addStretch(1)
-        hb.addWidget(b_open)
+        close = QPushButton("Bağla")
+        close.clicked.connect(self.accept)
+        hb.addWidget(close)
         lay.addLayout(hb)
+        self.fill()
+
+    def fill(self):
+        names = {v: short_name(n) for v, n in list_bases()}
+        us = self.users.users
+        self.tbl.setRowCount(len(us))
+        for r, u in enumerate(us):
+            comp = "bütün şirkətlər" if u.get("role") == "admin" else \
+                ", ".join(names.get(v, v) for v in u.get("companies", [])) or "—"
+            for c, val in enumerate([u["name"], "admin" if u.get("role") == "admin" else "istifadəçi", comp,
+                                     u.get("created", "")]):
+                self.tbl.setItem(r, c, QTableWidgetItem(val))
+        self.tbl.resizeColumnsToContents()
+        self.tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+
+    def _sel(self):
+        r = self.tbl.currentRow()
+        return self.users.users[r]["name"] if 0 <= r < len(self.users.users) else None
+
+    def add(self):
+        name, ok = QInputDialog.getText(self, "Yeni istifadəçi", "Ad:")
+        if not ok or not name.strip():
+            return
+        code, ok = QInputDialog.getText(self, "Yeni istifadəçi", f"{name} üçün kod (ən azı 4 simvol):",
+                                        QLineEdit.Password)
+        if not ok:
+            return
+        role = "admin" if QMessageBox.question(self, "Rol", "Bu istifadəçi admin olsun? (bütün şirkətlər, "
+                                               "istifadəçi idarəsi)") == QMessageBox.Yes else "user"
+        try:
+            self.users.add(name, code, role, [self.voen] if self.voen else [])
+        except ValueError as ex:
+            QMessageBox.warning(self, "Düzəldin", str(ex))
+            return
+        self.fill()
+
+    def grant(self):
+        n = self._sel()
+        if n and self.voen:
+            self.users.grant(n, self.voen)
+            self.fill()
+
+    def change_code(self):
+        n = self._sel()
+        if not n:
+            return
+        code, ok = QInputDialog.getText(self, "Kodu dəyiş", f"{n} üçün yeni kod:", QLineEdit.Password)
+        if ok:
+            try:
+                self.users.set_code(n, code)
+            except ValueError as ex:
+                QMessageBox.warning(self, "Düzəldin", str(ex))
+
+    def remove(self):
+        n = self._sel()
+        if not n:
+            return
+        admins = [u for u in self.users.users if u.get("role") == "admin"]
+        if self.users.is_admin(n) and len(admins) == 1:
+            QMessageBox.warning(self, "Olmaz", "Sonuncu admini silmək olmaz.")
+            return
+        if QMessageBox.question(self, "Sil", f"«{n}» istifadəçisi silinsin?") == QMessageBox.Yes:
+            self.users.remove(n)
+            self.fill()
+
+
+class CompanyPicker(QDialog):
+    """Şirkətlər — hər biri ayrıca kartda; üstünə basanda həmin şirkətin bazası açılır."""
+
+    def __init__(self, parent=None, current="", user="", users: Users | None = None):
+        super().__init__(parent)
+        self.user, self.users = user, users or Users()
+        self.setWindowTitle(f"{APP_NAME} {APP_VERSION} — şirkətlər")
+        self.setWindowIcon(app_icon())
+        self.resize(940, 560)
+        self.chosen = None
+        lay = QVBoxLayout(self)
+        top = QHBoxLayout()
+        t = QLabel("Şirkətlər")
+        t.setObjectName("pageTitle")
+        top.addWidget(t)
+        top.addStretch(1)
+        who = QLabel(f"İstifadəçi: <b>{user}</b>" + (" · admin" if self.users.is_admin(user) else ""))
+        top.addWidget(who)
+        if self.users.is_admin(user):
+            ub = QPushButton("İstifadəçilər…")
+            ub.clicked.connect(lambda: UsersDialog(self, self.users).exec())
+            top.addWidget(ub)
+        lay.addLayout(top)
+        s = QLabel("Şirkətin kartına basın — onun bazası açılır. Hər şirkətin məlumatı ayrıca saxlanılır.")
+        s.setObjectName("muted")
+        lay.addWidget(s)
+        sc = QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setFrameShape(QFrame.NoFrame)
+        self.body = QWidget()
+        self.grid = QGridLayout(self.body)
+        self.grid.setSpacing(14)
+        sc.setWidget(self.body)
+        lay.addWidget(sc, 1)
         self.fill(current)
 
+    def _card(self, title, sub, sub2, primary=False):
+        b = QPushButton()
+        b.setCursor(Qt.PointingHandCursor)
+        b.setMinimumSize(270, 120)
+        b.setText(f"{title}\n{sub}\n{sub2}")
+        bg = theme.BLUE if primary else "white"
+        fg = "white" if primary else theme.NAVY
+        b.setStyleSheet(f"QPushButton{{background:{bg}; color:{fg}; border:1px solid {theme.BORDER}; "
+                        f"border-left:6px solid {theme.NAVY}; border-radius:10px; text-align:left; padding:14px; "
+                        f"font-size:11pt; font-weight:600;}} QPushButton:hover{{border-color:{theme.BLUE}; "
+                        f"background:{theme.BLUE_LIGHT if not primary else theme.NAVY};}}")
+        return b
+
     def fill(self, select=""):
-        self.lst.clear()
+        while self.grid.count():
+            w = self.grid.takeAt(0).widget()
+            if w:
+                w.hide()
+                w.setParent(None)
+        cards = []
         for v, name in list_bases():
+            if not self.users.can_open(self.user, v):
+                continue
             st = Store(v)
             c = st.counts()
-            it = QListWidgetItem(f"{short_name(name)}   ·   VÖEN {v}   ·   qaimə {c['alis'] + c['satis']}, "
-                                 f"bank {c['bank']}, depozit {c['depozit']}")
-            it.setData(Qt.UserRole, v)
-            self.lst.addItem(it)
-            if v == select:
-                self.lst.setCurrentItem(it)
-        if self.lst.count() and not self.lst.currentItem():
-            self.lst.setCurrentRow(0)
-        if not self.lst.count():
-            self.lst.addItem(QListWidgetItem("Hələ baza yoxdur — «Yeni şirkət (baza) yarat» düyməsini basın."))
+            b = self._card(short_name(name), f"VÖEN {v}",
+                           f"qaimə {c['alis'] + c['satis']} · bank {c['bank']} · depozit {c['depozit']}")
+            b.clicked.connect(lambda _=False, v=v: self.open(v))
+            cards.append(b)
+        nb = self._card("＋ Yeni şirkət", "yeni baza yarat", "", primary=True)
+        nb.clicked.connect(self.create)
+        cards.append(nb)
+        gb = self._card("⬇ GitHub-dan yüklə", "başqa kompüterdəki baza", "")
+        gb.clicked.connect(self.from_github)
+        cards.append(gb)
+        for i, b in enumerate(cards):
+            self.grid.addWidget(b, i // 3, i % 3)
+        self.grid.setRowStretch(len(cards) // 3 + 1, 1)
+
+    def open(self, v):
+        self.chosen = v
+        self.accept()
 
     def from_github(self):
         st = Settings()
@@ -485,20 +683,17 @@ class CompanyPicker(QDialog):
             st.save()
         v = github_restore_dialog(self, GitHubSync(st.data["github_repo"], st.data["github_token"]))
         if v:
+            self.users.grant(self.user, v)
             self.fill(v)
 
     def create(self):
+        if not self.users.is_admin(self.user):
+            QMessageBox.information(self, "İcazə", "Yeni şirkəti yalnız admin yarada bilər.")
+            return
         v = new_company_dialog(self)
         if v:
             self.fill(v)
 
-    def open(self):
-        it = self.lst.currentItem()
-        v = it.data(Qt.UserRole) if it else None
-        if not v:
-            return
-        self.chosen = v
-        self.accept()
 
 
 # ===================================================================== redaktə pəncərəsi
@@ -750,7 +945,16 @@ class BasePage(QWidget):
         g.addWidget(self.company, 0, 1, 1, 2)
         newc = QPushButton("＋ Yeni şirkət (baza)")
         newc.clicked.connect(self.new_company)
-        g.addWidget(newc, 0, 3, alignment=Qt.AlignLeft)
+        hbx = QHBoxLayout()
+        hbx.addWidget(newc)
+        self.users_btn = QPushButton("👥 Bu şirkətin istifadəçiləri…")
+        self.users_btn.clicked.connect(self.manage_users)
+        hbx.addWidget(self.users_btn)
+        hbx.addStretch(1)
+        g.addLayout(hbx, 0, 3)
+        is_admin = self.main.users.is_admin(getattr(self.main, "user", ""))
+        newc.setVisible(is_admin)
+        self.users_btn.setVisible(is_admin)
         self.start = QDateEdit()
         self.start.setCalendarPopup(True)
         self.start.setDisplayFormat("dd.MM.yyyy")
@@ -902,6 +1106,8 @@ class BasePage(QWidget):
         bases = list_bases()
         self.company.blockSignals(True)
         self.company.clear()
+        bases = [(v, n) for v, n in bases if not getattr(self.main, "user", "") or
+                 self.main.users.can_open(self.main.user, v)]
         for v, name in bases:
             self.company.addItem(f"{short_name(name)} · VÖEN {v}", v)
         if not bases:
@@ -924,7 +1130,12 @@ class BasePage(QWidget):
     def new_company(self):
         r = new_company_dialog(self)
         if r:
+            self.main.users.grant(self.main.user, r)
             self.reload_companies(r)
+
+    def manage_users(self):
+        if self.store:
+            UsersDialog(self, self.main.users, self.store.voen).exec()
 
     # --- GitHub
     def gh_save(self):
@@ -1217,10 +1428,12 @@ class BasePage(QWidget):
             return
         if self.store.locked:
             code, ok = QInputDialog.getText(self, "Təsdiq kodu", "İlkin qalıqlar kilidlidir.\n"
-                                            "Dəyişmək üçün təsdiq kodunu daxil edin:", QLineEdit.Password)
+                                            "Dəyişmək üçün kodunuzu (admin) və ya təsdiq kodunu daxil edin:",
+                                            QLineEdit.Password)
             if not ok:
                 return
-            if not check_code(code):
+            m = self.main
+            if not (check_code(code) or (m.users.is_admin(m.user) and m.users.check(m.user, code))):
                 self.store.log("Uğursuz cəhd", "yanlış təsdiq kodu")
                 self.store.save()
                 QMessageBox.warning(self, "Kod yanlışdır", "Təsdiq kodu yanlışdır. İlkin qalıqlar dəyişdirilmədi.")
@@ -1667,6 +1880,9 @@ class GridPage(QWidget):
         if isinstance(ref, tuple) and ref[:1] == ("edit",):
             self.main.open_edit(ref[1], ref[2])
             return
+        if isinstance(ref, tuple) and ref[:1] == ("issue",):
+            self.main.ack_issue(ref[1])
+            return
         d = self.rep.detail(ref) if self.rep else None
         if not d:
             return
@@ -1871,15 +2087,18 @@ class Main(QMainWindow):
         (BankOps, "Ödənişlər və aid olduğu qaimələr", "Ödənişlər", None),
     ]
 
-    def __init__(self):
+    def __init__(self, user: str = ""):
         super().__init__()
         self.settings = Settings()
+        self.users = Users()
+        self.user = user
+        store_mod.CURRENT_USER = user
         store_mod.EXTRA_BACKUP_DIR = self.settings.data.get("backup_dir") or ""
         self.R = None
         self.ready = False
         self.sync = GitHubSync("", "")
         self.setup_sync()
-        self.setWindowTitle(f"{APP_NAME} {APP_VERSION} — {DEDICATED_TO} üçün — təqdim edir {PRESENTED_BY}")
+        self.setWindowTitle(f"{APP_NAME} {APP_VERSION} — təqdim edir {PRESENTED_BY}")
         self.setWindowIcon(app_icon())
         self.resize(1400, 860)
         cw = QWidget()
@@ -1899,8 +2118,10 @@ class Main(QMainWindow):
         th.addSpacing(20)
         th.addWidget(self.comp)
         th.addStretch(1)
-        th.addWidget(QLabel(f"<span style='color:#DCE8F7'>{DEDICATED_TO} üçün</span>"
-                            f"<span style='color:#9FBDE6'>   |   təqdim edir </span><b>{PRESENTED_BY}</b>"
+        self.user_lbl = QLabel(f"<span style='color:#DCE8F7'>👤 {user}</span>" if user else "")
+        th.addWidget(self.user_lbl)
+        th.addSpacing(16)
+        th.addWidget(QLabel(f"<span style='color:#9FBDE6'>təqdim edir </span><b>{PRESENTED_BY}</b>"
                             f" <span style='color:#DCE8F7'>· {PRESENTED_URL}</span>"))
         v.addWidget(top)
 
@@ -1964,7 +2185,13 @@ class Main(QMainWindow):
             elif spec == "tabs":
                 w = QTabWidget()
                 w.setDocumentMode(True)
-                w.setStyleSheet("QTabBar::tab{padding:8px 18px; font-weight:600;}")
+                w.setStyleSheet(
+                    f"QTabWidget::pane{{border-top:3px solid {theme.NAVY};}}"
+                    f"QTabBar::tab{{padding:9px 20px; font-weight:600; background:{theme.BLUE_LIGHT}; "
+                    f"color:{theme.NAVY}; border:1px solid {theme.BORDER}; border-bottom:none; margin-right:3px; "
+                    f"border-top-left-radius:6px; border-top-right-radius:6px;}}"
+                    f"QTabBar::tab:selected{{background:{theme.NAVY}; color:white;}}"
+                    f"QTabBar::tab:hover:!selected{{background:{theme.BLUE}; color:white;}}")
                 for cls, title, sheet, extra in self.TABS:
                     p = GridPage(self, cls, title, sheet, extra)
                     self.pages.append(p)
@@ -2020,7 +2247,8 @@ class Main(QMainWindow):
             p.load(R, a, b)
         for i in range(self.nav.count()):
             if self.nav.item(i).text().startswith("⚠"):
-                n_iss = len([x for x in R.issues if x.date is None or a <= x.date <= b])
+                acks = R.store.data.get("ok_issues", {}) if getattr(R, "store", None) else {}
+                n_iss = len([x for x in R.issues if (x.date is None or a <= x.date <= b) and issue_key(x) not in acks])
                 self.nav.item(i).setText(f"⚠   Yoxlanılmalı ({n_iss})")
 
     # --- redaktə / əl ilə əlavə
@@ -2030,6 +2258,29 @@ class Main(QMainWindow):
             return
         if edit_dialog(self, st, kind, key):
             self.files_page.run()
+
+    def ack_issue(self, key):
+        st = self.files_page.store
+        if not st:
+            return
+        acked = key in st.data.get("ok_issues", {})
+        label = key.split("|")[0]
+        if acked:
+            if QMessageBox.question(self, "OK geri alınsın?", f"Bu məqam OK edilib.\n{label}\n\nOK geri alınsın "
+                                    "(yenidən «açıq» olsun)?") != QMessageBox.Yes:
+                return
+            if not ask_code(self, self.users, self.user, "Təsdiq", "OK-ni geri almaq üçün"):
+                return
+            st.ack(key, "", undo=True)
+        else:
+            note, ok = QInputDialog.getText(self, "OK — yoxlanılıb, düzdür",
+                                            f"{label}\n\n{key.split('|')[-1]}\n\nQeyd (məs. «bankla razılaşdırıldı»):")
+            if not ok:
+                return
+            if not ask_code(self, self.users, self.user, "Təsdiq", "Məqamı OK kimi qeyd etmək üçün"):
+                return
+            st.ack(key, note.strip())
+        self.files_page.run()
 
     def add_manual(self, kind):
         st = self.files_page.store
@@ -2053,14 +2304,19 @@ def run():
     holder = {}
 
     def open_main():
+        users = Users()
+        lg = LoginDialog(users)
+        if lg.exec() != QDialog.Accepted or not lg.user:
+            app.quit()
+            return
         st = Settings()
-        pk = CompanyPicker(None, st.data.get("last_company", ""))
+        pk = CompanyPicker(None, st.data.get("last_company", ""), lg.user, users)
         if pk.exec() != QDialog.Accepted or not pk.chosen:
             app.quit()
             return
         st.data["last_company"] = pk.chosen
         st.save()
-        w = Main()
+        w = Main(lg.user)
         holder["main"] = w
         w.showMaximized()
 

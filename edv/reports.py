@@ -807,31 +807,57 @@ class Advances:
 
 
 # ================================================================= 6. Yoxlanılmalı
+def issue_key(i) -> str:
+    return f"{i.group}|{i.date}|{i.voen}|{round(i.amount or 0, 2)}|{(i.text or '')[:80]}"
+
+
 class IssuesReport:
+    searchable = True
+
     def __init__(self, R: Result, a, b):
         self.R, self.a, self.b = R, a, b
-        self.items = [i for i in R.issues if i.date is None or a <= i.date <= b]
+        self.filters = {}
+        self.all = [i for i in R.issues if i.date is None or a <= i.date <= b]
+        st = getattr(R, "store", None)
+        self.acks = (st.data.get("ok_issues", {}) if st else {})
+        self.items = [i for i in self.all if issue_key(i) not in self.acks]
+
+    def filter_spec(self):
+        return [("show", "Göstər", [("Açıq məqamlar", "open"), ("OK edilənlər", "ok"), ("Hamısı", "all")])]
 
     def grid(self, signature):
-        heads = ["Tarix", "VÖEN", "Kontragent", "Məbləğ", "İzah"]
+        show = (self.filters or {}).get("show") or "open"
+        heads = ["Tarix", "VÖEN", "Kontragent", "Məbləğ", "İzah", "OK (kim, nə vaxt, qeyd)"]
         g = Grid(title=f"{self.R.company_name} · VÖEN {self.R.company_voen}",
                  subtitle=f"{fmt_date(self.a)} – {fmt_date(self.b)} · Yoxlanılmalı məqamlar",
-                 ncols=5, col_widths=[1.0, 1.1, 3.0, 1.2, 7.0], signature=signature)
+                 ncols=6, col_widths=[1.0, 1.1, 3.0, 1.2, 6.0, 2.6], signature=signature)
         g.head_rows = [[t(h, HEAD, "center" if i in (0, 1) else "left") for i, h in enumerate(heads)]]
+        if show == "open":
+            lst_all = self.items
+        elif show == "ok":
+            lst_all = [i for i in self.all if issue_key(i) in self.acks]
+        else:
+            lst_all = self.all
         groups = defaultdict(list)
-        for i in self.items:
+        for i in lst_all:
             groups[i.group].append(i)
         for gname, lst in groups.items():
-            g.rows.append([Cell(f"{gname}  ({len(lst)})", SECTION, align="left", colspan=5), None, None, None, None])
+            g.rows.append([Cell(f"{gname}  ({len(lst)})", SECTION, align="left", colspan=6)] + [None] * 5)
             for i in sorted(lst, key=lambda x: (x.date or dt.date.min)):
-                g.rows.append([t(fmt_date(i.date) if i.date else "", ITEM, "center"), t(i.voen, ITEM, "center"),
-                               t(i.name), n(i.amount), t(i.text)])
-        if not self.items:
-            g.rows.append([Cell("Yoxlanılmalı məqam yoxdur ✓", RESULT, align="left", colspan=5),
-                           None, None, None, None])
-        g.top_lines = [("Məqam sayı:", str(len(self.items)))]
-        g.footnote = ("Bu siyahıdakı əməliyyatlar hesabatlarla qarışdırılmır: hər biri ayrıca qrupda "
-                      "göstərilir ki, yoxlayıb qərar verəsiniz.")
+                k = issue_key(i)
+                ack = self.acks.get(k)
+                ref = ("issue", k)
+                st = "alt" if ack else ITEM
+                okt = f"✓ {ack['user']} · {ack['at']} · {ack.get('note', '')}" if ack else ""
+                g.rows.append([t(fmt_date(i.date) if i.date else "", st, "center", ref=ref),
+                               t(i.voen, st, "center", ref=ref), t(i.name, st, ref=ref), n(i.amount, st, ref),
+                               t(i.text, st, ref=ref), t(okt, st, ref=ref)])
+        if not lst_all:
+            g.rows.append([Cell("Yoxlanılmalı məqam yoxdur ✓", RESULT, align="left", colspan=6)] + [None] * 5)
+        g.top_lines = [("Açıq məqam:", str(len(self.items))), ("OK edilən:", str(len(self.all) - len(self.items)))]
+        g.footnote = ("Sətrə iki dəfə basın — məqamı «OK» (yoxlanılıb, düzdür) kimi qeyd edin; istifadəçi kodu tələb "
+                      "olunur. OK edilənlər «Göstər: OK edilənlər»də qalır və geri açıla bilər.")
+        self._by_key = {issue_key(i): i for i in self.all}
         return g
 
     def detail(self, ref):

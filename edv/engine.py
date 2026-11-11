@@ -74,7 +74,14 @@ def norm_name(s: str) -> str:
     for w in _LEGAL_N:
         s = s.replace(w, " ")
     s = re.sub(r"[^A-Z0-9 ]", " ", s)
-    return re.sub(r"\s+", " ", s).strip()
+    # kəsik və ya tam yazılmış hüquqi formalar, şəkilçilər (A.S-NIN, MAHDUD MASULIY..., SANAYI ANONIM ...)
+    stop = ("MAHDUD", "MEHDUD", "MASUL", "MESUL", "CAMIY", "CEMIY", "CAMI", "CEMI", "ANONIM", "SIRKET", "SIRKAT",
+            "LIMITED", "QAPALI", "ACIQ", "SEHMDAR", "SAHMDAR", "NIN", "NUN", "MMC", "QSC", "ASC", "LLC", "AS")
+    words = [w for w in s.split() if not any(w.startswith(x) for x in stop) and not (len(w) == 1)]
+    return " ".join(words).strip()
+
+
+_ABBR = {"AR": ["AZERBAYCAN", "RESPUBLIKASI"], "AZ": ["AZERBAYCAN"]}
 
 
 def names_match(a: str, b: str) -> bool:
@@ -84,10 +91,17 @@ def names_match(a: str, b: str) -> bool:
         return False
     if na == nb or na in nb or nb in na:
         return True
-    ta, tb = set(na.split()), set(nb.split())
-    small = ta if len(ta) <= len(tb) else tb
-    if small and len(small & (ta | tb)) and all(any(difflib.SequenceMatcher(None, x, y).ratio() > 0.8
-                                                     for y in (tb if small is ta else ta)) for x in small):
+    def toks(n):
+        out = []
+        for w in n.split():
+            out += _ABBR.get(w, [w])
+        return out
+    ta, tb = toks(na), toks(nb)
+    small, big = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    sim = lambda x, y: x == y or (len(x) > 3 and len(y) > 3 and (x.startswith(y) or y.startswith(x))) or \
+        difflib.SequenceMatcher(None, x, y).ratio() > 0.8
+    hit = sum(1 for x in small if any(sim(x, y) for y in big))
+    if small and hit / len(small) >= 0.6 and hit >= min(2, len(small)):
         return True
     return difflib.SequenceMatcher(None, na, nb).ratio() >= 0.75
 
