@@ -64,10 +64,10 @@ class SalesRegister:
         heads = [("Kontragent", ["№", "Vergitutma ayı", "VÖEN", "Alıcı"]),
                  ("E-QAİMƏ", ["Tarix", "Ay", "Seriya", "Nömrə", "Yekun", "ƏDV",
                               "ƏDV-siz", "0% / azad"]),
-                 ("Ödənişlər (tarix — bankdan)", ["Bank-1", "ƏDV-1", "Tarix-1", "Bank-2", "ƏDV-2", "Tarix-2", "Digər"]),
+                 ("Ödənişlər", ["Bank", "ƏDV", "Tarix (bank)"]),
                  ("Qalıq (debitor)", ["Əsas", "ƏDV"])]
         nc = sum(len(s) for _, s in heads)
-        widths = [0.5, 1.2, 1.1, 2.8, 1.0, 1.1, 0.9, 1.0, 1.1, 1.0, 1.1, 1.0] + [1.0, 0.9, 1.0] * 2 + [1.0, 1.1, 1.0]
+        widths = [0.5, 1.2, 1.1, 2.8, 1.0, 1.1, 0.9, 1.0, 1.1, 1.0, 1.1, 1.0] + [1.1, 1.0, 1.6] + [1.1, 1.0]
         g = Grid(title=f"{self.R.company_name} · VÖEN {self.R.company_voen}",
                  subtitle=f"{fmt_date(self.a)} – {fmt_date(self.b)} · Təqdim edilən e-qaimələr (satış)",
                  ncols=nc, col_widths=widths, signature=signature)
@@ -81,9 +81,10 @@ class SalesRegister:
             net_b, vat_b = self.R.base[id(i)]
             pays = _pays_by_date(self.by[id(i)])
             months = sorted({mkey(p[0]) for p in pays})
-            p1 = pays[0] if pays else None
-            p2 = pays[1] if len(pays) > 1 else None
-            rest = sum(p[1] + p[2] for p in pays[2:])
+            pb = sum(p[1] for p in pays)
+            pv = sum(p[2] for p in pays)
+            bdates = sorted({x.pay.date for x in self.by[id(i)] if x.kind == "net"})
+            dtxt = ", ".join(fmt_date(d) for d in bdates)
             deb_n = net_b - sum(p[1] for p in pays)
             deb_v = vat_b - sum(p[2] for p in pays)
             zero = i.azad + i.sifir + i.celb_olmayan
@@ -94,21 +95,16 @@ class SalesRegister:
                    t(i.voen, ITEM, "center"), t(i.name), t(fmt_date(i.date), ITEM, "center"),
                    t(mshort(mkey(i.date)), ITEM, "center"), t(i.seria, ITEM, "center"), t(i.nomre, ITEM, "center")]
             row += [n(x, ref=ref) for x in vals]
-            for p in (p1, p2):
-                row += ([n(p[1], ref=ref), n(p[2], ref=ref), t(fmt_date(p[0]), ITEM, "center")] if p else
-                        [n(0.0), n(0.0), t("", ITEM)])
-            row += [n(rest, ref=ref), n(deb_n, RESULT if deb_n > 0.01 else ITEM, ref),
-                    n(deb_v, RESULT if deb_v > 0.01 else ITEM, ref)]
+            row += [n(pb, ref=ref), n(pv, ref=ref), t(dtxt or "—", ITEM, "center"),
+                    n(deb_n, RESULT if deb_n > 0.01 else ITEM, ref), n(deb_v, RESULT if deb_v > 0.01 else ITEM, ref)]
             g.rows.append(row)
-            for key, x in zip(("yekun", "vat", "net", "zero", "b1", "v1", "b2", "v2", "rest", "dn", "dv"),
-                              vals + [p1[1] if p1 else 0, p1[2] if p1 else 0, p2[1] if p2 else 0,
-                                      p2[2] if p2 else 0, rest, deb_n, deb_v]):
+            for key, x in zip(("yekun", "vat", "net", "zero", "pb", "pv", "dn", "dv"),
+                              vals + [pb, pv, deb_n, deb_v]):
                 tot[key] += x
         g.rows.append([t("CƏMİ", TOTAL, colspan=8)] + [None] * 7 +
                       [n(tot[k], TOTAL) for k in ("yekun", "vat", "net", "zero")] +
-                      [n(tot["b1"], TOTAL), n(tot["v1"], TOTAL), t("", TOTAL),
-                       n(tot["b2"], TOTAL), n(tot["v2"], TOTAL), t("", TOTAL),
-                       n(tot["rest"], TOTAL), n(tot["dn"], TOTAL), n(tot["dv"], TOTAL)])
+                      [n(tot["pb"], TOTAL), n(tot["pv"], TOTAL), t("", TOTAL),
+                       n(tot["dn"], TOTAL), n(tot["dv"], TOTAL)])
         g.top_lines = [("Qaimə sayı:", str(len(self.invoices))),
                        ("Debitor borc — əsas:", round(tot["dn"], 2)), ("Debitor borc — ƏDV:", round(tot["dv"], 2))]
         g.footnote = ("Vergitutma ayı — pulun bank hesabına (ƏDV — depozitə) daxil olduğu ay(lar). Ödənişlər qaiməyə "
@@ -144,7 +140,7 @@ class PurchaseRegister(Offset):
         heads = [("Kontragent", ["№", "Vergitutma ayı", "VÖEN", "Satıcı"]),
                  ("E-QAİMƏ", ["Tarix", "Gəlmə ayı", "Seriya", "Nömrə", "Yekun", "ƏDV",
                               "ƏDV-siz", "Yol vergisi", "Azad", "0%"]),
-                 ("Ödənişlər (tarix — bankdan)", ["Bank", "ƏDV", "Tarix"]),
+                 ("Ödənişlər", ["Bank", "ƏDV", "Tarix (bank)"]),
                  ("Qalıq (kreditor)", ["Əsas", "ƏDV"]),
                  ("Əvəzləşmə", ["Əvəzləşmə dövrü", "Status"])]
         nc = sum(len(s) for _, s in heads)
@@ -182,10 +178,8 @@ class PurchaseRegister(Offset):
             al = [x for x in self.by_inv[id(i)] if x.date <= self.b]
             pn = sum(x.amount for x in al if x.kind == "net")
             pv = sum(x.amount for x in al if x.kind == "vat")
-            dates = sorted({x.pay.date for x in al if x.kind == "net"}) or sorted({x.pay.date for x in al})
-            dtxt = ", ".join(fmt_date(d)[:5] for d in dates[:3]) + (" …" if len(dates) > 3 else "")
-            if dates:
-                dtxt += f".{dates[-1].year}"
+            dates = sorted({x.pay.date for x in al if x.kind == "net"})
+            dtxt = ", ".join(fmt_date(d) for d in dates) or "—"
             offm = sorted({mkey(x.date) for x in al if x.kind == "vat" and self.a <= x.date <= self.b})
             if i.status_group == "gozleyen":
                 st = "⚠ Təsdiq gözləyir"
@@ -257,9 +251,7 @@ class Settlement:
         v["s_net"] = sum(i.yekun - i.edv for i in s18)
         v["s_vat"] = sum(i.edv for i in s18)
         v["s0"] = sum(i.yekun for i in s0)
-        recv_all = sum(r.op.amount for r in R.bank if r.category == IN_SALES and inp(r.op.date))
-        v["recv0"] = sum(x[2] for x in R.taxable0 if inp(x[0]))
-        v["recv"] = recv_all - v["recv0"]
+        v["recv"] = sum(r.op.amount for r in R.bank if r.category == IN_SALES and inp(r.op.date))
         v["dep_in"] = sum(o.medaxil for o in R.deposit if o.medaxil and o.executed and inp(o.date))
         v["bank_vat"] = v["recv"] * VAT_RATE
         v["vat_diff"] = v["bank_vat"] - v["dep_in"]
@@ -301,17 +293,16 @@ class Settlement:
             ("Göndərilən qaimələr (ƏDV 18%) — əsas məbləğ", "s_net", ITEM),
             ("Göndərilən qaimələr (ƏDV 18%) — ƏDV", "s_vat", ITEM),
             ("Göndərilən qaimələr — ƏDV-dən azad / 0% (ayrıca)", "s0", ITEM),
-            ("Şirkətlərdən banka gələn pul (ƏDV-li qaimələr üzrə)", "recv", ITEM),
-            ("ƏDV-dən azad / 0% qaimələr üzrə banka gələn pul", "recv0", ITEM),
+            ("Şirkətlərdən banka gələn pul (ümumi)", "recv", ITEM),
             ("Banka görə ƏDV (banka gələn pul × 18%)", "bank_vat", ITEM),
             ("ƏDV depozitinə görə ƏDV (depozitə gələn ƏDV)", "dep_in", ITEM),
             ("Fərq: banka görə − depozitə görə", "vat_diff", ITEM),
             ("Hesablanmış ƏDV (ikisindən böyük olanı)", "hes", RESULT),
-            ("Debitor borc — əsas (ay sonuna)", "deb", ITEM),
             ("Alış — gələn qaimələr (yalnız MT, təsdiqlənmiş)", None, None),
             ("Alış dövriyyəsi — əsas məbləğ (ƏDV-siz)", "p_net", ITEM),
             ("Alış dövriyyəsi — ƏDV", "p_vat", ITEM),
-            ("Ödənilmiş qaimələr — bankdan (əsas)", "paid_net", ITEM),
+            ("Ödənilmiş qaimələr — əsas məbləğ (bankdan)", "paid_net", ITEM),
+            ("Ödənilmiş qaimələr — ƏDV (depozitdən)", "off", ITEM),
             ("Əvəzləşən ƏDV (ödənilmiş gələn qaimələrin depozitdən ödənilən ƏDV-si)", "off", RESULT),
             ("Nəticə", None, None),
             ("Hesablanmış ƏDV", "hes", ITEM),
@@ -345,8 +336,8 @@ class Settlement:
                        ("Büdcəyə ödənilməli (+) / qaytarılır (−):", round(tot_due, 2)),
                        ("Növbəti dövrə keçən qalıq:", round(c, 2))]
         g.footnote = ("Hesablanmış ƏDV = banka görə ƏDV (alıcılardan banka gələn pul × 18%) ilə ƏDV depozitinə gələn "
-                      "ƏDV-dən böyük olanı. ƏDV-dən azad / 0% qaimələr və onlara gələn pul ayrıca sətirdədir, 18%-ə "
-                      "vurulmur. Dövriyyə — yalnız MT qaimələri. Gələn pul — bank hesabına, ƏDV — "
+                      "ƏDV-dən böyük olanı. Banka gələn pul alıcılardan gələn ümumi məbləğdir (qaimələrə bölünmür). "
+                      "ƏDV-dən azad / 0% qaimələr ayrıca sətirdədir. Dövriyyə — yalnız MT qaimələri. Gələn pul — bank hesabına, ƏDV — "
                       "ƏDV depozitə daxil olan; ödənilmiş alış qaimələrinin depozitdən ödənilən ƏDV-si əvəzləşir. "
                       "Cəlb olunan məbləğ pulun daxil olduğu aya aid edilir; ƏDV depozitə gələn ƏDV "
                       "bankdakı puldan çoxdursa, baza ƏDV÷18% götürülür. Qalıq: müsbət — büdcəyə borc, mənfi — artıq "
