@@ -353,7 +353,7 @@ class Offset:
         """e-taxes «Əlavə 1» faylı: 308 | seriya | nömrə | ödənilmiş ümumi məbləğ."""
         out = []
         for i in self.invoices:
-            if i.status_group != "tesdiq" or i.is_opening:
+            if i.status_group != "tesdiq" or (i.is_opening and not i.nomre):
                 continue
             s = round(sum(x.amount for x in self.by_inv[id(i)] if mkey(x.date) == month), 2)
             if s > 0.004:
@@ -579,14 +579,18 @@ class Debts:
                   (paid, ["Əsas → bank", "ƏDV → depozit"])]
         if with_hes:
             groups.append(("Hesablanmış ƏDV", ["əsas × 18%"]))
-        groups += [("Son qalıq — borc", ["Əsas", "ƏDV"]),
-                   ("18% yoxlaması", ["Əsas × 18%", "Fərq", "Nəticə"]),
-                   ("Cəmi borc", ["Əsas + ƏDV"]),
-                   ("Ödəniş tarixləri", ["dövr üzrə"])]
+        cred = self.side == "alis"
+        if cred:
+            groups += [("Son qalıq — borc", ["Əsas", "ƏDV"]), ("Əvəzləşmə dövrü", ["ay"])]
+        else:
+            groups += [("Son qalıq — borc", ["Əsas", "ƏDV"]),
+                       ("18% yoxlaması", ["Əsas × 18%", "Fərq", "Nəticə"]),
+                       ("Cəmi borc", ["Əsas + ƏDV"]),
+                       ("Ödəniş tarixləri", ["dövr üzrə"])]
         nc = 3 + sum(len(s) for _, s in groups)
         widths = [3.4, 1.1, 1.3]
         for _, subs in groups:
-            widths += [2.6 if s == "Nəticə" else 2.2 if s == "dövr üzrə" else 1.1 for s in subs]
+            widths += [2.6 if s == "Nəticə" else 2.2 if s in ("dövr üzrə", "ay") else 1.1 for s in subs]
         g = Grid(title=f"{self.R.company_name} · VÖEN {self.R.company_voen}",
                  subtitle=f"{fmt_date(self.a)} – {fmt_date(self.b)} · " +
                           ("Satış: göndərilən, daxil olan, hesablanmış ƏDV və qalıq" if with_hes else self._title()),
@@ -597,7 +601,8 @@ class Debts:
             h1 += [t(name, HEAD, "center", colspan=len(subs))] + [None] * (len(subs) - 1)
             h2 += [t(s, SUB, "center") for s in subs]
         g.head_rows = [h1, h2]
-        keys = ["n0", "v0", "ni", "vi", "np", "vp"] + (["hes"] if with_hes else []) + ["n1", "v1", "exp", "diff"]
+        keys = ["n0", "v0", "ni", "vi", "np", "vp"] + (["hes"] if with_hes else []) + ["n1", "v1"] + \
+               ([] if cred else ["exp", "diff"])
         tot = defaultdict(float)
         bad = 0
         for v in self._voens():
@@ -613,6 +618,11 @@ class Debts:
             row = [t(self._name(v)), t(v, ITEM, "center"), t(self._chk(v), ITEM, "center")]
             for k in keys:
                 row.append(n(s[k], RESULT if k == "hes" else ITEM, ("party", v)))
+            if cred:
+                ms = sorted({mkey(e[0]) for e in ev if self.a <= e[0] <= self.b and e[6]})
+                row.append(t(", ".join(f"{AY_ADLARI[m[1] - 1]} {m[0]}" for m in ms) or "—", ITEM, "center"))
+                g.rows.append(row)
+                continue
             row.append(t(note, RESULT if "⚠" in note else ITEM))
             row.append(n(s["n1"] + s["v1"], RESULT, ("party", v)))
             pdts = sorted({e[0] for e in ev if self.a <= e[0] <= self.b and (e[5] or e[6])})
@@ -621,6 +631,14 @@ class Debts:
                 ptxt = f"… {ptxt} ({len(pdts)} ödəniş)"
             row.append(t(ptxt or "—", ITEM, "center"))
             g.rows.append(row)
+        if cred:
+            g.rows.append([t("CƏMİ", TOTAL, colspan=3), None, None] + [n(tot[k], TOTAL) for k in keys] +
+                          [t("", TOTAL)])
+            g.top_lines = [("Son borc — əsas məbləğ:", round(tot["n1"], 2)), ("Son borc — ƏDV:", round(tot["v1"], 2))]
+            g.footnote = ("Əsas məbləğ bankla, ƏDV depozitlə ödənilir; ödənişlər FIFO ilə əvvəl ilkin qalığı, sonra "
+                          "cari qaimələri bağlayır. Əvəzləşmə dövrü — ƏDV-nin depozitdən ödənildiyi ay(lar). "
+                          "Mənfi qalıq — avans.")
+            return g
         g.rows.append([t("CƏMİ", TOTAL, colspan=3), None, None] + [n(tot[k], TOTAL) for k in keys] +
                       [t(f"{bad} kontragentdə uyğunsuzluq" if bad else "✓", TOTAL)] +
                       [n(tot["n1"] + tot["v1"], TOTAL), t("", TOTAL)])
@@ -652,7 +670,8 @@ class Debts:
         for m in M:
             h1 += [t(mlabel(m, self.a, self.b), HEAD, "center", colspan=3), None, None]
             h2 += [t("Qaimə", SUB, "center"), t(paid, SUB, "center"), t("Qalıq", SUB, "center")]
-        h1 += [t("Dövr üzrə", HEAD, "center", colspan=3), None, None, t("18% yoxlaması", HEAD, "center", rowspan=2)]
+        h1 += [t("Dövr üzrə", HEAD, "center", colspan=3), None, None,
+               t("Əvəzləşmə dövrü" if self.side == "alis" else "18% yoxlaması", HEAD, "center", rowspan=2)]
         h2 += [t("Qaimə", SUB, "center"), t(paid, SUB, "center"), t("Son qalıq", SUB, "center"), None]
         g.head_rows = [h1, h2]
         bounds = []
@@ -669,6 +688,9 @@ class Debts:
                 continue
             ms = [self._sums(ev, a, b) for a, b in bounds]
             _, _, note = self.check(S["n1"], S["v1"])
+            if self.side == "alis":
+                note = ", ".join(f"{AY_ADLARI[m[1] - 1]} {m[0]}" for m in
+                                 sorted({mkey(e[0]) for e in ev if self.a <= e[0] <= self.b and e[6]})) or "—"
             for li, (k, label) in enumerate(lines):
                 st = ITEM if k == "n" else ("alt" if k == "v" else RESULT)
                 row = [t(self._name(v), ITEM, rowspan=len(lines)) if li == 0 else None,
@@ -712,8 +734,9 @@ class Debts:
             row.append(t("", TOTAL, rowspan=len(lines)) if li == 0 else None)
             g.rows.append(row)
         g.top_lines = [("Son borc — əsas məbləğ:", round(tot[("n1", None)], 2)),
-                       ("Son borc — ƏDV:", round(tot[("v1", None)], 2)),
-                       ("Cəmi borc:", round(tot[("n1", None)] + tot[("v1", None)], 2))]
+                       ("Son borc — ƏDV:", round(tot[("v1", None)], 2))]
+        if self.side != "alis":
+            g.top_lines.append(("Cəmi borc:", round(tot[("n1", None)] + tot[("v1", None)], 2)))
         g.footnote = ("Hər kontragent üçün iki sətir: əsas məbləğ (bank) və ƏDV (depozit). Hər ayda: qaimə, "
                       f"{paid.lower()}, ay sonuna qalıq.")
         return g

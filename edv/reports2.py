@@ -223,6 +223,124 @@ class PurchaseRegister(Offset):
         return g
 
 
+# ================================================================= Əvəzləşmə (gələn qaimələr üzrə, FIFO)
+class OffsetRegister(Offset):
+    """Gələn qaimələr: hər qaimə — seriya, nömrə, VÖEN, şirkət, status; ödənişlər FIFO ilə bağlanır
+    (əvvəl ilkin qalıq qaimələri, sonra köhnədən yeniyə). Əvvəlki dövrlərin qaimələrinə bu dövrdə edilən
+    əvəzləşmələr ayrıca bölmədə — cari qaimələrdən sonra."""
+    searchable = True
+
+    def __init__(self, R: Result, a, b):
+        super().__init__(R, a, b)
+        self.by = self.by_inv
+
+    def filter_spec(self):
+        return [("st", "Göstər", [("Bütün qaimələr", None), ("Yalnız açıq (qalığı olan)", "open"),
+                                  ("Yalnız tam əvəzləşən", "done")])]
+
+    def _row(self, k, i, section, tot):
+        b = self.R.base.get(id(i))
+        ref = ("inv", id(i))
+        status = i.kind_label if i.is_opening else f"{i.kind_label} · {i.status}".replace(
+            "Sistem tərəfindən təsdiqləndi", "Təsdiqləndi (sistem)")
+        head = [t(str(k), ITEM, "center"), t(fmt_date(i.date), ITEM, "center"), t(i.seria, ITEM, "center"),
+                t(i.nomre or "—", ITEM, "center"), t(i.voen, ITEM, "center"), t(i.name), t(status)]
+        if b is None:
+            st = "alt"
+            return [Cell(c.value, st, align=c.align) for c in head] + \
+                   [n(i.yekun - i.edv, st), n(i.edv, st), n(i.yekun, st)] + [Cell(None, st) for _ in range(4)] + \
+                   [t("passiv — hesaba alınmır", st, "center")]
+        al = [x for x in self.by[id(i)] if x.date <= self.b]
+        if section == 2:
+            al_show = [x for x in al if x.date >= self.a]
+        else:
+            al_show = al
+        pn = sum(x.amount for x in al_show if x.kind == "net")
+        pv = sum(x.amount for x in al_show if x.kind == "vat")
+        rn = b[0] - sum(x.amount for x in al if x.kind == "net")
+        rv = b[1] - sum(x.amount for x in al if x.kind == "vat")
+        months = sorted({mkey(x.date) for x in al_show if x.kind == "vat" and self.a <= x.date <= self.b})
+        per = ", ".join(mshort(m) for m in months)
+        if i.status_group == "gozleyen":
+            per = (per + " · " if per else "") + "⚠ təsdiq gözləyir"
+        want = (getattr(self, "filters", None) or {}).get("st")
+        if want == "open" and rn + rv <= 0.01:
+            return None
+        if want == "done" and (rv > 0.01 or not months):
+            return None
+        for key, x in zip(("n", "v", "y", "pn", "pv", "rn", "rv"), (b[0], b[1], sum(b), pn, pv, rn, rv)):
+            tot[key] += x
+        return head + [n(b[0], ref=ref), n(b[1], ref=ref), n(sum(b), ref=ref), n(pn, ref=ref), n(pv, ref=ref),
+                       n(rn, RESULT if rn > 0.01 else ITEM, ref), n(rv, RESULT if rv > 0.01 else ITEM, ref),
+                       t(per or "—", ITEM, "center")]
+
+    def grid(self, signature):
+        heads = [("Qaimə", ["№", "Tarix", "Seriya", "Nömrə", "VÖEN", "Şirkət", "Status"]),
+                 ("Qaimənin məbləği", ["Əsas", "ƏDV", "Yekun"]),
+                 ("Ödənilib (FIFO)", ["Əsas (bank)", "ƏDV (depozit)"]),
+                 ("Açıq qalıq", ["Əsas", "ƏDV"]),
+                 ("Əvəzləşmə", ["Əvəzləşmə dövrü"])]
+        nc = sum(len(x) for _, x in heads)
+        g = Grid(title=f"{self.R.company_name} · VÖEN {self.R.company_voen}",
+                 subtitle=f"{fmt_date(self.a)} – {fmt_date(self.b)} · Gələn qaimələr — əvəzləşmə (FIFO)",
+                 ncols=nc, col_widths=[0.5, 1.0, 0.9, 1.0, 1.1, 2.8, 2.0, 1.1, 1.0, 1.1, 1.1, 1.1, 1.0, 1.0, 1.6],
+                 signature=signature)
+        h1, h2 = [], []
+        for name, subs in heads:
+            h1 += [t(name, HEAD, "center", colspan=len(subs))] + [None] * (len(subs) - 1)
+            h2 += [t(s_, SUB, "center") for s_ in subs]
+        g.head_rows = [h1, h2]
+
+        def total(label, tot):
+            return [t(label, TOTAL, colspan=7)] + [None] * 6 + \
+                   [n(tot[k], TOTAL) for k in ("n", "v", "y", "pn", "pv", "rn", "rv")] + [t("", TOTAL)]
+
+        cur = sorted([i for i in self.R.purchases if self.a <= i.date <= self.b and not i.is_opening],
+                     key=lambda i: (i.date, i.nomre))
+        tot1 = defaultdict(float)
+        k = 0
+        for i in cur:
+            row = self._row(k + 1, i, 1, tot1)
+            if row:
+                k += 1
+                g.rows.append(row)
+        g.rows.append(total(f"CƏMİ — cari dövrün qaimələri ({k})", tot1))
+        # əvvəlki dövrlərin (və ilkin qalıq) qaimələrinə bu dövrdə edilən əvəzləşmə
+        old = sorted([i for i in self.R.purchases if (i.date < self.a or i.is_opening) and
+                      any(self.a <= x.date <= self.b for x in self.by[id(i)])], key=lambda i: (i.date, i.nomre))
+        tot2 = defaultdict(float)
+        if old:
+            g.rows.append([Cell(None, "note")] + [None] * (nc - 1))
+            g.rows.append([Cell("Əvvəlki dövrlərin qaimələri üzrə bu dövrdə edilən əvəzləşmə (ödənişin tarixinə görə)",
+                                SECTION, align="left", colspan=nc)] + [None] * (nc - 1))
+            k2 = 0
+            for i in old:
+                row = self._row(k2 + 1, i, 2, tot2)
+                if row:
+                    k2 += 1
+                    g.rows.append(row)
+            g.rows.append(total(f"CƏMİ — əvvəlki dövrlərin qaimələri ({k2})", tot2))
+        self.offset_vat = tot1["pv"] + tot2["pv"]
+        g.top_lines = [("Bu dövrdə əvəzləşən ƏDV:", round(sum(x.amount for x in self.R.allocs if x.kind == "vat"
+                                                                and self.a <= x.date <= self.b), 2)),
+                       ("Açıq qalıq — əsas:", round(tot1["rn"], 2)), ("Açıq qalıq — ƏDV:", round(tot1["rv"], 2))]
+        g.footnote = ("Ödənişlər VÖEN üzrə FIFO ilə bağlanır: əvvəl ilkin qalıq qaimələri, sonra köhnədən yeniyə. "
+                      "Bank ödənişi əsas məbləği, ƏDV depozit ödənişi ƏDV-ni bağlayır. Əvəzləşmə dövrü — ƏDV-nin "
+                      "ödənildiyi ay. Əvvəlki dövrlərin qaimələri aşağıda ayrıca bölmədədir.")
+        self._by_id = {id(i): i for i in self.R.purchases}
+        return g
+
+    def detail(self, ref):
+        i = self._by_id.get(ref[1])
+        if not i:
+            return None
+        xs = sorted(self.by[id(i)], key=lambda x: x.date)
+        return Detail(f"{i.number} · {i.name}", f"{fmt_date(i.date)} · {i.status} · VÖEN {i.voen}",
+                      ALLOC_HEAD, [_alloc_row(x) for x in xs], {6, 7},
+                      [("Bank (əsas)", sum(x.amount for x in xs if x.kind == "net")),
+                       ("Depozit (ƏDV)", sum(x.amount for x in xs if x.kind == "vat"))])
+
+
 # ================================================================= Hesablaşma
 class Settlement:
     def __init__(self, R: Result, a, b):
@@ -244,7 +362,8 @@ class Settlement:
         sales = [i for i in R.sales if id(i) in R.base and not i.is_advance and not i.is_opening and inp(i.date)]
         purch = [i for i in R.purchases if i.status_group == "tesdiq" and not i.is_advance and not i.is_opening
                  and inp(i.date)]
-        al = [x for x in R.allocs if inp(x.date) and x.invoice.status_group == "tesdiq" and not x.invoice.is_opening]
+        al = [x for x in R.allocs if inp(x.date) and x.invoice.status_group == "tesdiq"
+              and not (x.invoice.is_opening and not x.invoice.nomre)]
         v = {}
         s18 = [i for i in sales if i.edv > 0.004]
         s0 = [i for i in sales if i.edv <= 0.004]
@@ -387,7 +506,7 @@ class Settlement:
         if key in ("paid_net", "off", "off_neg"):
             kind = "net" if key == "paid_net" else "vat"
             items = [x for x in R.allocs if x.kind == kind and inp(x.date) and x.invoice.status_group == "tesdiq"
-                     and not x.invoice.is_opening]
+                     and not (x.invoice.is_opening and not x.invoice.nomre)]
             return Detail("Ödənilmiş alış qaimələri (FIFO)", when, ALLOC_HEAD, [_alloc_row(x) for x in items],
                           {6, 7}, [("Cəmi", sum(x.amount for x in items))])
         if key in ("tax", "hes", "tax0"):

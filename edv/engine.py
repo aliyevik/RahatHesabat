@@ -251,8 +251,14 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
         net, vat = round(float(r.get("net") or 0), 2), round(float(r.get("vat") or 0), 2)
         if not v or (abs(net) < 0.005 and abs(vat) < 0.005):
             continue
+        try:
+            idate = dt.date.fromisoformat(r["date"]) if r.get("date") else od
+        except ValueError:
+            idate = od
+        idate = min(idate, od)          # ilkin qalıq həmişə başlanğıcdan əvvəldir — FIFO-da ilk bağlanır
         inv = Invoice(side=r.get("side", "alis"), voen=v, name=r.get("name") or v, tip="İlkin qalıq",
-                      status="İlkin qalıq", date=od, seria="İLKİN", nomre="", novu="İlkin qalıq",
+                      status="İlkin qalıq", date=idate, seria=(r.get("seria") or "İLKİN").strip(),
+                      nomre=str(r.get("nomre") or "").strip(), novu="İlkin qalıq",
                       note="Əllə yazılmış ilkin qalıq", note2="", edvsiz=net, edv=vat, celb=net,
                       celb_olmayan=0.0, azad=0.0, sifir=0.0, yekun=round(net + vat, 2), source="ilkin")
         (sales if inv.side == "satis" else purchases).append(inv)

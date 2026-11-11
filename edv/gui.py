@@ -36,7 +36,7 @@ from .store import Store, base_dir, check_code, list_bases
 from .cloud import GitHubSync, SyncError
 from .users import Users
 from .parsers import ParseError, load
-from .reports2 import BankOps, PurchaseRegister, SalesRegister, Settlement
+from .reports2 import BankOps, OffsetRegister, PurchaseRegister, SalesRegister, Settlement
 from .modules import BankModule, DepositModule, EditLog, PurchaseModule, SalesModule
 from .reports import issue_key
 from .reports import (Advances, BankReport, Creditors, Debtors, IssuesReport, Offset, SalesReport, Summary, mlabel,
@@ -150,14 +150,14 @@ class Welcome(QWidget):
 
 # ===================================================================== ilkin qalıqlar
 class OpeningDialog(QDialog):
-    """Kontragentlər üzrə ilkin qalıqlar (əsas məbləğ və ƏDV ayrıca), ƏDV depozit və bank qalığı."""
+    """Qaimələr üzrə ilkin qalıqlar (kreditor/debitor; əsas və ƏDV ayrıca), ƏDV depozit və bank qalığı."""
     SIDES = [("alis", "Kreditor — təchizatçıya borcumuz"), ("satis", "Debitor — alıcının bizə borcu")]
 
     def __init__(self, parent, files, data, od, comp_voen, comp_name):
         super().__init__(parent)
         self.files = files
         self.setWindowTitle("İlkin qalıqlar")
-        self.resize(1050, 680)
+        self.resize(1180, 700)
         self.od = od
         lay = QVBoxLayout(self)
         head = QLabel(f"<b>{comp_name}</b> · VÖEN {comp_voen}")
@@ -210,29 +210,29 @@ class OpeningDialog(QDialog):
         g.setColumnStretch(5, 1)
         lay.addLayout(g)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["VÖEN", "Kontragent", "Növ", "Əsas məbləğ (ƏDV-siz)", "ƏDV"])
+        self.table = QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels(["Növ", "VÖEN", "Kontragent", "Qaimə tarixi", "Seriya", "Nömrə",
+                                              "Əsas məbləğ (ƏDV-siz)", "ƏDV"])
         self.table.verticalHeader().setVisible(False)
         hh = self.table.horizontalHeader()
-        hh.setSectionResizeMode(1, QHeaderView.Stretch)
-        for c, w in ((0, 120), (2, 270), (3, 170), (4, 140)):
+        hh.setSectionResizeMode(2, QHeaderView.Stretch)
+        for c, w in ((0, 110), (1, 110), (3, 100), (4, 70), (5, 110), (6, 150), (7, 120)):
             self.table.setColumnWidth(c, w)
         lay.addWidget(self.table, 1)
 
-        saved = {(r["voen"], r.get("side", "alis")): r for r in data.get("rows", [])}
-        known = {}
+        self.known = {}
         for f in files:
             if f.kind in ("alis", "satis"):
                 for i in f.items:
-                    known.setdefault((i.voen, f.kind), i.name)
-        for key, r in saved.items():
-            known.setdefault(key, r.get("name", ""))
-        for (v, side), name in sorted(known.items(), key=lambda kv: (kv[0][1], kv[1].lower())):
-            r = saved.get((v, side), {})
-            self.add_row(v, name, side, r.get("net", 0.0), r.get("vat", 0.0))
+                    self.known.setdefault(i.voen, i.name)
+        for r in data.get("rows", []):
+            self.known.setdefault(r["voen"], r.get("name", ""))
+            self.add_row(r.get("side", "alis"), r["voen"], r.get("name", ""), r.get("date") or "",
+                         r.get("seria") or "", r.get("nomre") or "", r.get("net", 0.0), r.get("vat", 0.0))
+        self.table.itemChanged.connect(self._fill_name)
 
         bl = QHBoxLayout()
-        for text, fn in (("Sətir əlavə et", lambda: self.add_row("", "", "alis", 0, 0)),
+        for text, fn in (("Sətir əlavə et", lambda: self.add_row("alis", "", "", "", "", "", 0, 0)),
                          ("Seçilmiş sətri sil", self.del_row),
                          ("Excel şablonu endir", self.export_tpl),
                          ("Excel-dən yüklə", self.import_xlsx)):
@@ -250,20 +250,53 @@ class OpeningDialog(QDialog):
         lay.addLayout(bl)
         self.result_data = None
 
-    def add_row(self, v, name, side, net, vat):
+    SIDE_SHORT = [("alis", "Kreditor"), ("satis", "Debitor")]
+
+    def add_row(self, side, v, name, date, seria, nomre, net, vat):
         r = self.table.rowCount()
+        self.table.blockSignals(True)
         self.table.insertRow(r)
-        self.table.setItem(r, 0, QTableWidgetItem(v))
-        self.table.setItem(r, 1, QTableWidgetItem(name))
         cb = QComboBox()
-        for k, label in self.SIDES:
+        for k, label in self.SIDE_SHORT:
             cb.addItem(label, k)
         cb.setCurrentIndex(0 if side == "alis" else 1)
-        self.table.setCellWidget(r, 2, cb)
-        for c, x in ((3, net), (4, vat)):
+        self.table.setCellWidget(r, 0, cb)
+        if isinstance(date, (dt.date, dt.datetime)):
+            date = date.strftime("%d.%m.%Y")
+        elif date and re.match(r"\d{4}-\d{2}-\d{2}", str(date)):
+            date = dt.date.fromisoformat(str(date)[:10]).strftime("%d.%m.%Y")
+        for c, x in ((1, v), (2, name), (3, date or ""), (4, seria), (5, nomre)):
+            it = QTableWidgetItem(str(x or ""))
+            if c in (1, 3, 4, 5):
+                it.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(r, c, it)
+        for c, x in ((6, net), (7, vat)):
             it = QTableWidgetItem(fmt_money(x) if abs(x or 0) > 0.004 else "")
             it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self.table.setItem(r, c, it)
+        self.table.blockSignals(False)
+
+    def _fill_name(self, it):
+        if it.column() != 1:
+            return
+        v = re.sub(r"\D", "", it.text())
+        nm = self.table.item(it.row(), 2)
+        if v in self.known and nm is not None and not nm.text().strip():
+            nm.setText(self.known[v])
+
+    @staticmethod
+    def _date(x):
+        if isinstance(x, dt.datetime):
+            return x.date()
+        if isinstance(x, dt.date):
+            return x
+        x = str(x or "").strip()
+        for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%y"):
+            try:
+                return dt.datetime.strptime(x[:10], fmt).date()
+            except ValueError:
+                pass
+        return None
 
     def del_row(self):
         for r in sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True):
@@ -271,21 +304,39 @@ class OpeningDialog(QDialog):
 
     def collect(self):
         rows, bad = [], []
+        od = pydate(self.od_edit.date())
+        seen = set()
         for r in range(self.table.rowCount()):
-            txt = lambda c: self.table.item(r, c).text() if self.table.item(r, c) else ""
+            txt = lambda c: self.table.item(r, c).text().strip() if self.table.item(r, c) else ""
             try:
-                net, vat = parse_amount(txt(3)), parse_amount(txt(4))
+                net, vat = parse_amount(txt(6)), parse_amount(txt(7))
             except ValueError:
                 bad.append(f"Sətir {r + 1}: məbləğ düzgün yazılmayıb")
                 continue
             if abs(net) < 0.005 and abs(vat) < 0.005:
                 continue
-            v = re.sub(r"\D", "", txt(0))
+            v = re.sub(r"\D", "", txt(1))
             if len(v) != 10:
                 bad.append(f"Sətir {r + 1}: VÖEN 10 rəqəm olmalıdır")
                 continue
-            rows.append({"voen": v, "name": txt(1).strip(), "side": self.table.cellWidget(r, 2).currentData(),
-                         "net": net, "vat": vat})
+            d = self._date(txt(3))
+            if d is None:
+                bad.append(f"Sətir {r + 1}: qaimənin tarixi yazılmayıb (gg.aa.iiii)")
+                continue
+            if d > od:
+                bad.append(f"Sətir {r + 1}: qaimənin tarixi ilkin qalıq tarixindən ({fmt_date(od)}) sonra ola bilməz")
+                continue
+            if not txt(5):
+                bad.append(f"Sətir {r + 1}: qaimənin nömrəsi yazılmayıb")
+                continue
+            side = self.table.cellWidget(r, 0).currentData()
+            key = (side, txt(4).upper(), txt(5))
+            if key in seen:
+                bad.append(f"Sətir {r + 1}: {txt(4)} {txt(5)} qaiməsi təkrarlanır")
+                continue
+            seen.add(key)
+            rows.append({"voen": v, "name": txt(2), "side": side, "date": d.isoformat(),
+                         "seria": txt(4).upper(), "nomre": txt(5), "net": net, "vat": vat})
         self.od = pydate(self.od_edit.date())
         out = {"date": self.od.isoformat(), "rows": rows}
         for key, w in (("deposit", self.dep), ("bank", self.bank), ("budget", self.budget)):
@@ -303,27 +354,66 @@ class OpeningDialog(QDialog):
         self.result_data = out
         self.accept()
 
+    TPL_HEAD = ["VÖEN", "Kontragent", "Qaimə tarixi", "Seriya", "Nömrə", "Əsas məbləğ (ƏDV-siz)", "ƏDV"]
+
     def export_tpl(self):
         p, _ = QFileDialog.getSaveFileName(self, "Şablon", os.path.join(os.path.expanduser("~"),
                                            "Ilkin qaliqlar.xlsx"), "Excel (*.xlsx)")
         if not p:
             return
+        from openpyxl.styles import Alignment, Font, PatternFill
         wb = Workbook()
-        ws = wb.active
-        ws.title = "İlkin qalıqlar"
-        ws.append(["VÖEN", "Kontragent", "Növ (Kreditor/Debitor)", "Əsas məbləğ (ƏDV-siz)", "ƏDV"])
+        hfill = PatternFill("solid", fgColor="1F3A68")
+        sheets = {"alis": wb.active, "satis": wb.create_sheet()}
+        sheets["alis"].title = "Kreditor"
+        sheets["satis"].title = "Debitor"
+        for ws in sheets.values():
+            ws.append(self.TPL_HEAD)
+            for c in ws[1]:
+                c.font = Font(bold=True, color="FFFFFF")
+                c.fill = hfill
+                c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            for col, w in zip("ABCDEFG", (14, 46, 14, 10, 14, 22, 14)):
+                ws.column_dimensions[col].width = w
+            ws.freeze_panes = "A2"
         for r in range(self.table.rowCount()):
-            txt = lambda c: self.table.item(r, c).text() if self.table.item(r, c) else ""
-            side = "Debitor" if self.table.cellWidget(r, 2).currentData() == "satis" else "Kreditor"
+            txt = lambda c: self.table.item(r, c).text().strip() if self.table.item(r, c) else ""
+            ws = sheets[self.table.cellWidget(r, 0).currentData()]
             vals = []
-            for c in (3, 4):
+            for c in (6, 7):
                 try:
                     vals.append(parse_amount(txt(c)))
                 except ValueError:
                     vals.append(0.0)
-            ws.append([txt(0), txt(1), side] + vals)
-        for col, w in zip("ABCDE", (14, 50, 24, 22, 14)):
-            ws.column_dimensions[col].width = w
+            d = self._date(txt(3))
+            ws.append([txt(1), txt(2), d, txt(4), txt(5)] + vals)
+        for ws in sheets.values():
+            for row in ws.iter_rows(min_row=2):
+                row[0].number_format = "@"
+                row[2].number_format = "DD.MM.YYYY"
+                row[4].number_format = "@"
+                row[5].number_format = row[6].number_format = "#,##0.00"
+        info = wb.create_sheet("Təlimat")
+        lines = [
+            "İlkin qalıqlar — qaimələr üzrə",
+            "",
+            "«Kreditor» vərəqi — təchizatçılara borcumuz (gələn qaimələr üzrə ödənilməmiş qalıq).",
+            "«Debitor» vərəqi — alıcıların bizə borcu (göndərilən qaimələr üzrə alınmamış qalıq).",
+            "",
+            "Hər sətir — bir qaimə: VÖEN (10 rəqəm), kontragentin adı, qaimənin tarixi (gg.aa.iiii),",
+            "seriya (məs. MT), nömrə, ödənilməmiş əsas məbləğ (ƏDV-siz) və ödənilməmiş ƏDV.",
+            "Qaimə tarixi ilkin qalıq tarixindən sonra ola bilməz. Nömrə mütləqdir.",
+            "Mənfi məbləğ — avans (məs. təchizatçıya avans vermişik).",
+            "",
+            "Sonrakı ödənişlər FIFO ilə ilk növbədə bu qaimələri (köhnədən yeniyə), sonra cari qaimələri bağlayır.",
+            "",
+            "Nümunə (Kreditor vərəqində):",
+            "1234567891 | «Nümunə» MMC | 15.09.2026 | MT | 2609123456 | 1 000,00 | 180,00",
+        ]
+        for x in lines:
+            info.append([x])
+        info["A1"].font = Font(bold=True, size=13)
+        info.column_dimensions["A"].width = 110
         wb.save(p)
         QDesktopServices.openUrl(QUrl.fromLocalFile(p))
 
@@ -332,32 +422,56 @@ class OpeningDialog(QDialog):
         if not p:
             return
         try:
-            ws = openpyxl.load_workbook(p, data_only=True).active
+            wb = openpyxl.load_workbook(p, data_only=True)
         except Exception as ex:  # noqa
             QMessageBox.warning(self, "Oxunmadı", str(ex))
             return
         existing = {}
         for r in range(self.table.rowCount()):
-            v = self.table.item(r, 0).text() if self.table.item(r, 0) else ""
-            existing[(v, self.table.cellWidget(r, 2).currentData())] = r
-        n_ok = 0
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            if not row or not row[0]:
+            g = lambda c: self.table.item(r, c).text().strip() if self.table.item(r, c) else ""
+            existing[(self.table.cellWidget(r, 0).currentData(), g(4).upper(), g(5))] = r
+
+        def num(x):
+            if isinstance(x, (int, float)):
+                return float(x)
+            try:
+                return parse_amount(str(x or "0"))
+            except ValueError:
+                return 0.0
+
+        n_ok, skipped = 0, []
+        for ws in wb.worksheets:
+            t_ = ws.title.strip().lower()
+            side = "alis" if t_.startswith("kred") else "satis" if t_.startswith("deb") else None
+            if side is None:
                 continue
-            v = re.sub(r"\D", "", str(row[0]))
-            if len(v) != 10:
-                continue
-            side = "satis" if str(row[2] or "").strip().lower().startswith("d") else "alis"
-            net = row[3] if isinstance(row[3], (int, float)) else parse_amount(str(row[3] or "0"))
-            vat = row[4] if len(row) > 4 and isinstance(row[4], (int, float)) else parse_amount(str((row[4] if len(row) > 4 else 0) or "0"))
-            if (v, side) in existing:
-                r = existing[(v, side)]
-                self.table.item(r, 3).setText(fmt_money(net) if abs(net) > 0.004 else "")
-                self.table.item(r, 4).setText(fmt_money(vat) if abs(vat) > 0.004 else "")
-            else:
-                self.add_row(v, str(row[1] or ""), side, net, vat)
-            n_ok += 1
-        QMessageBox.information(self, "Yükləndi", f"{n_ok} sətir yükləndi. Yoxlayıb «Yadda saxla» basın.")
+            for ri, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+                row = list(row or []) + [None] * 7
+                if not any(row[:7]):
+                    continue
+                v = re.sub(r"\D", "", str(row[0] or ""))
+                net, vat = num(row[5]), num(row[6])
+                nomre = str(row[4] or "").strip()
+                if nomre.endswith(".0"):
+                    nomre = nomre[:-2]
+                if len(v) != 10 or not nomre or (abs(net) < 0.005 and abs(vat) < 0.005):
+                    skipped.append(f"{ws.title}, sətir {ri}")
+                    continue
+                d = self._date(row[2])
+                seria = str(row[3] or "").strip().upper()
+                key = (side, seria, nomre)
+                if key in existing:
+                    r = existing[key]
+                    self.table.item(r, 6).setText(fmt_money(net) if abs(net) > 0.004 else "")
+                    self.table.item(r, 7).setText(fmt_money(vat) if abs(vat) > 0.004 else "")
+                else:
+                    self.add_row(side, v, str(row[1] or "") or self.known.get(v, ""), d or "", seria, nomre, net, vat)
+                    existing[key] = self.table.rowCount() - 1
+                n_ok += 1
+        msg = f"{n_ok} qaimə yükləndi. Yoxlayıb «Yadda saxla» basın."
+        if skipped:
+            msg += "\n\nBuraxılan sətirlər (VÖEN, nömrə və ya məbləğ yoxdur):\n" + ", ".join(skipped[:15])
+        QMessageBox.information(self, "Yükləndi", msg)
 
 
 # ===================================================================== şirkət (baza) seçimi
@@ -2107,7 +2221,7 @@ class Main(QMainWindow):
     TABS = [
         (Settlement, "ƏDV hesablaşması", "Hesablaşma", None),
         (SalesRegister, "Təqdim edilən e-qaimə", "Təqdim edilən e-qaimə", None),
-        (PurchaseRegister, "Gələn qaimə, Əvəzləşmə", "Gələn qaimə", [("e-taxes «Əlavə 1» faylı", export_appendix)]),
+        (OffsetRegister, "Gələn qaimə — Əvəzləşmə", "Əvəzləşmə", [("e-taxes «Əlavə 1» faylı", export_appendix)]),
         (BankOps, "Ödənişlər və aid olduğu qaimələr", "Ödənişlər", None),
     ]
 
