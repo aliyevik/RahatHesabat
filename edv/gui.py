@@ -763,8 +763,32 @@ def edit_dialog(parent, store, kind, key) -> bool:
         add("Qeyd:", "note", QLineEdit(cur.get("note", "")))
     elif kind == "bank":
         add("Tarix:", "date", d_edit(cur.get("date")))
-        add("Qarşı tərəfin VÖEN-i:", "cp_voen", QLineEdit(cur.get("cp_voen", "")))
-        add("Qarşı tərəf:", "cp_name", QLineEdit(cur.get("cp_name", "")))
+        R = getattr(parent, "R", None)
+        pick = QComboBox()
+        pick.addItem("— kontragenti siyahıdan seçin (VÖEN və ad özü dolacaq) —", None)
+        if R is not None:
+            for v, p in sorted(R.parties.items(), key=lambda kv: kv[1].name.lower()):
+                role = ("alıcı" if p.is_customer else "") + (" / " if p.is_customer and p.is_supplier else "") + \
+                    ("təchizatçı" if p.is_supplier else "")
+                pick.addItem(f"{short_name(p.name)} · VÖEN {v}" + (f" · {role}" if role else ""), (v, p.name))
+        pick.setMaxVisibleItems(20)
+        form.addWidget(QLabel("<b>Kontragent seç:</b>"), r, 0)
+        form.addWidget(pick, r, 1)
+        r += 1
+        v_e, n_e = QLineEdit(cur.get("cp_voen", "")), QLineEdit(cur.get("cp_name", ""))
+        add("Qarşı tərəfin VÖEN-i:", "cp_voen", v_e)
+        add("Qarşı tərəf:", "cp_name", n_e)
+
+        def picked(_i):
+            d = pick.currentData()
+            if d:
+                v_e.setText(d[0])
+                n_e.setText(d[1])
+        pick.currentIndexChanged.connect(picked)
+        tey_l = QLabel(f"<span style='color:{theme.MUTED}'>Təyinat: {cur.get('teyinat', '')}</span>")
+        tey_l.setWordWrap(True)
+        form.addWidget(tey_l, r, 0, 1, 2)
+        r += 1
         add("Məbləğ (+ mədaxil / − məxaric):", "amount", num_edit(cur.get("amount")))
         add("Təyinat:", "teyinat", QLineEdit(cur.get("teyinat", "")))
         cb = QComboBox()

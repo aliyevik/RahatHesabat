@@ -118,6 +118,7 @@ class BankModule(_Module):
                  "Hesab", "Düzəliş"]
         g = self._grid(heads, [0.5, 1.0, 1.2, 3.0, 1.1, 2.6, 1.15, 1.15, 5.0, 2.2, 1.6], signature, "Bank əməliyyatları")
         cats = {id_: r.category for id_, r in ((getattr(r.op, "_key", None), r) for r in self.R.bank)}
+        rows_by_key = {getattr(r.op, "_key", None): r for r in self.R.bank}
         tin = tout = 0.0
         items = self._items()
         for k, o in enumerate(items, 1):
@@ -130,12 +131,17 @@ class BankModule(_Module):
                 tin += vin
                 tout += vout
             g.rows.append([t(str(k), st, "center", ref=ref), t(fmt_date(o.date), st, "center", ref=ref),
-                           t(_mfull(mkey(o.date)), st, "center", ref=ref), t(short_name(o.cp_name), st, ref=ref),
-                           t(o.cp_voen, st, "center", ref=ref), t(cat, st, ref=ref), n(vin, st, ref), n(vout, st, ref),
+                           t(_mfull(mkey(o.date)), st, "center", ref=ref),
+                           t(short_name(rows_by_key[o._key].name if o._key in rows_by_key else o.cp_name)
+                             + (" ⓘ" if o._key in rows_by_key and rows_by_key[o._key].note else ""), st, ref=ref),
+                           t(rows_by_key[o._key].op.cp_voen if o._key in rows_by_key else o.cp_voen, st, "center", ref=ref),
+                           t(cat, st, ref=ref), n(vin, st, ref), n(vout, st, ref),
                            t(o.teyinat, st, ref=ref), t(o.account, st, ref=ref), t(_mark(o), st, "center", ref=ref)])
         g.rows.append([t("CƏMİ", TOTAL, colspan=6)] + [None] * 5 + [n(tin, TOTAL), n(tout, TOTAL)] + [t("", TOTAL)] * 3)
         g.top_lines = [("Əməliyyat:", str(len(items))), ("Mədaxil:", round(tin, 2)), ("Məxaric:", round(tout, 2))]
-        g.footnote = "Sətrə iki dəfə basın — kateqoriyanı, qarşı tərəfi və s. düzəltmək üçün."
+        g.footnote = ("Sətrə iki dəfə basın — kateqoriyanı və qarşı tərəfi (siyahıdan seçməklə) dəyişmək üçün. "
+                      "ⓘ — eyni bank daxilində köçürmə: qarşı tərəf bankda «KAPITAL BANK ASC» yazılıb, əsl şirkət "
+                      "təyinatdan (VÖEN və ya ada görə) tapılıb.")
         return g
 
 

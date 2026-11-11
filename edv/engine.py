@@ -11,6 +11,9 @@ from dataclasses import dataclass, field
 from . import VAT_RATE
 from .parsers import BankOp, DepositOp, Invoice, SourceFile, voen
 
+# Bankların öz VÖEN-ləri (eyni bank daxilində köçürmədə qarşı tərəf kimi bank yazılır)
+BANK_SELF_VOENS = {"9900003611"}
+
 # Büdcə / sosial fondlar (VÖEN → qısa ad)
 BUDGET_VOENS = {
     "1602473621": "Vergi (DVX)",
@@ -128,6 +131,8 @@ class BankRow:
 
     @property
     def check_text(self) -> str:
+        if getattr(self.op, "resolved_by", None):
+            return f"VÖEN ✓ · təyinatdan ({self.op.resolved_by})"
         if not self.op.cp_voen:
             return "VÖEN yoxdur"
         v = "VÖEN ✓"
@@ -281,7 +286,33 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
 
     # ---- bank əməliyyatlarının təsnifatı
     bank_rows: list[BankRow] = []
+    # Eyni bankın daxilində köçürmələrdə qarşı tərəf yerində bankın özü (KAPITAL BANK ASC) yazılır,
+    # əsl göndərən/alan isə təyinatda olur — onu VÖEN-ə və ya ada görə tapırıq.
+    known = {v: p for v, p in parties.items() if p.is_customer or p.is_supplier}
+    party_toks = {v: [w for w in norm_name(p.name).split() if len(w) > 2] for v, p in known.items()}
+
+    def from_teyinat(text):
+        cands = {x for x in re.findall(r"(?<!\d)\d{10}(?!\d)", text) if x in known}
+        if len(cands) == 1:
+            return cands.pop(), "VÖEN"
+        tt = set(norm_name(text).split())
+        hits = []
+        for v, toks in party_toks.items():
+            if toks and (all(w in tt for w in toks) or (len(toks) >= 2 and
+                                                       sum(w in tt for w in toks) / len(toks) >= 0.7)):
+                hits.append(v)
+        if len(hits) == 1:
+            return hits[0], "ad"
+        return None, None
+
     for o in sorted(bank_ops, key=lambda x: (x.date, x.doc)):
+        if (o.cp_voen in BANK_SELF_VOENS or o.cp_voen == company_voen or not o.cp_voen) and not o.category:
+            rv, how = from_teyinat(o.teyinat)
+            if rv:
+                o.orig_cp = f"{o.cp_name} / {o.cp_voen}"
+                o.resolved_by = how
+                o.cp_voen = rv
+                o.cp_name = known[rv].name
         t = o.teyinat.lower()
         v = o.cp_voen
         official = parties[v].name if v in parties else ""
@@ -318,6 +349,8 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
             else:
                 cat = OUT_UNKNOWN
         row = BankRow(o, cat, official or short_name(o.cp_name), bool(v), name_ok)
+        if getattr(o, "resolved_by", None):
+            row.note = f"təyinatdan tapıldı ({o.resolved_by}); bankda: {o.orig_cp}"
         if cat == OUT_BUDGET:
             row.name = BUDGET_VOENS.get(v, o.cp_name)
         bank_rows.append(row)
