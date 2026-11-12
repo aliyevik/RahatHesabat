@@ -336,8 +336,8 @@ class OffsetRegister(Offset):
         tot4 = defaultdict(float)
         if lo:
             g.rows.append([Cell(None, "note")] + [None] * (nc - 1))
-            g.rows.append([Cell("4. Qaiməyə bağlanmayan ödənişlər — avans / artıq ödəniş (qaimə gələndə FIFO ilə "
-                                "bağlanacaq)", SECTION, align="left", colspan=nc)] + [None] * (nc - 1))
+            g.rows.append([Cell("4. Qaiməyə bağlanmayan ödənişlər — avans / artıq ödəniş (son sütuna iki dəfə basın — "
+                                "təchizatçını «avansla ödənilən» kimi qeyd edin)", SECTION, align="left", colspan=nc)] + [None] * (nc - 1))
             for k4, (p_, k_, r_) in enumerate(lo, 1):
                 v_ = getattr(p_, "cp_voen", None) or getattr(p_, "voen", "")
                 nm_ = getattr(p_, "cp_name", None) or getattr(p_, "name", "")
@@ -349,7 +349,10 @@ class OffsetRegister(Offset):
                                t(str(getattr(p_, "doc", "") or "")[:24], ITEM, "center"), t(v_, ITEM, "center"),
                                t(nm_), t(src)] + [Cell(None, ITEM) for _ in range(3)] +
                               [n(r_ if k_ == "net" else 0), n(r_ if k_ == "vat" else 0),
-                               Cell(None, ITEM), Cell(None, ITEM), t("qaimə yoxdur", RESULT, "center")])
+                               Cell(None, ITEM), Cell(None, ITEM),
+                               (t("avans — qaimə gələndə bağlanacaq", ITEM, "center", ref=("advmark", v_))
+                                if v_ in getattr(self.R, "advance_voens", set()) else
+                                t("⚠ qaimə tapılmadı — yoxlayın", RESULT, "center", ref=("advmark", v_)))])
             g.rows.append(total(f"CƏMİ — qaiməyə bağlanmayan ödənişlər ({len(lo)})", tot4))
         # bank / depozit ilə tutuşdurma
         R, a, b = self.R, self.a, self.b
@@ -391,7 +394,6 @@ class OffsetRegister(Offset):
                        ("o cümlədən kreditor borcdan:", round(tot2["pv"], 2)),
                        ("Kreditor borc (açıq qalıq) — əsas:", round(tot1["rn"] + tot2["rn"] + tot3["rn"], 2)),
                        ("ƏDV:", round(tot1["rv"] + tot2["rv"] + tot3["rv"], 2))]
-        g.top_lines += self.reconcile(tot1["pn"] + tot2["pn"], tot1["pv"] + tot2["pv"])
         g.footnote = ("Ödənişlər VÖEN üzrə FIFO ilə bağlanır: əvvəl ilkin qalıq (köhnə kreditor borc) qaimələri, sonra "
                       "köhnədən yeniyə. Bank ödənişi əsas məbləği, ƏDV depozit ödənişi ƏDV-ni bağlayır. Əvəzləşmə "
                       "dövrü — ƏDV-nin ödənildiyi ay. Ödənilməmiş qaimələr 3-cü bölmədədir: ödəniş gələndə həmin ayın "

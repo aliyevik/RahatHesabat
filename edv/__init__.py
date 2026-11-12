@@ -1,5 +1,5 @@
 APP_NAME = "ƏDV Hesabatı"
-APP_VERSION = "3.5.0"
+APP_VERSION = "3.5.1"
 PRESENTED_BY = "FMC"
 PRESENTED_URL = "fmc.az"
 VAT_RATE = 0.18

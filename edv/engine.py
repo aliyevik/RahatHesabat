@@ -550,7 +550,10 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
                 taxable.append((d, v, inc, op, "bank" if src == "bank" else "ƏDV/18%"))
             cum_base = nb
 
+    adv_v = set(openings.get("advance_voens") or [])
     for pay, kind, rest in unalloc:
+        if (getattr(pay, "voen", "") or getattr(pay, "cp_voen", "")) in adv_v:
+            continue                    # bu təchizatçıya qaimədən əvvəl avans ödəmək adidir
         issues.append(Issue("Alış: qaimədən artıq ödəniş (avans və ya əvvəlki dövrün borcu)", pay.date,
                             getattr(pay, "voen", "") or getattr(pay, "cp_voen", ""),
                             getattr(pay, "name", "") or getattr(pay, "cp_name", ""), -rest,
@@ -603,11 +606,13 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
                                 sum(x.amount for x in allocs if x.invoice is inv and x.kind == "vat"),
                                 "İlkin qalığa (keçən dövrün qaimələrinə) ödənilən ƏDV. Qaimə nömrəsi bilinmədiyi "
                                 "üçün «Əlavə 1» faylına avtomatik düşmür — lazım olsa e-taxes-da əl ilə əlavə edin.", inv))
-    return Result(company_voen, company_name, files, purchases, sales, deposit, bank_rows, allocs,
+    R_ = Result(company_voen, company_name, files, purchases, sales, deposit, bank_rows, allocs,
                   s1 + s2, unalloc, sl1 + sl2, parties, issues, dep_open, rng,
                   bank_open, od,
                   base, dict(adv_used), dict(adv_uses), dict(mt_adv), taxable, taxable0,
                   float(openings.get("budget") or 0.0), bank_close, role_conflicts, early)
+    R_.advance_voens = adv_v
+    return R_
 
 
 def check_files(files: list[SourceFile]) -> list[str]:

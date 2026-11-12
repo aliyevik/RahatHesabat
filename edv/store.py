@@ -339,6 +339,7 @@ class Store:
 
     def openings(self) -> dict:
         o = dict(self.data.get("openings") or {})
+        o["advance_voens"] = list(self.data.get("advance_voens") or [])
         if self.start:
             o["start"] = self.start.isoformat()
         return o

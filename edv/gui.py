@@ -2097,6 +2097,9 @@ class GridPage(QWidget):
         self.render()
 
     def show_detail(self, ref):
+        if isinstance(ref, tuple) and ref[:1] == ("advmark",):
+            self.main.toggle_advance(ref[1])
+            return
         if isinstance(ref, tuple) and ref[:1] == ("edit",):
             self.main.open_edit(ref[1], ref[2])
             return
@@ -2339,6 +2342,8 @@ class Main(QMainWindow):
         top.setObjectName("topbar")
         top.setAttribute(Qt.WA_StyledBackground, True)
         top.setFixedHeight(58)
+        top.setStyleSheet(f"#topbar{{background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {theme.BLUE_MID}, "
+                          f"stop:0.45 #134A8E, stop:1 {theme.NAVY});}} #topbar QLabel{{color:white;}}")
         th = QHBoxLayout(top)
         th.setContentsMargins(22, 0, 22, 0)
         th.addWidget(QLabel(f"<span style='font-size:15pt;font-weight:800'>{APP_NAME}</span>"
@@ -2363,6 +2368,10 @@ class Main(QMainWindow):
         pbar.setStyleSheet(f"#pbar{{background:white; border-bottom:1px solid {theme.BORDER};}}")
         ph = QHBoxLayout(pbar)
         ph.setContentsMargins(22, 6, 22, 6)
+        self.side_btn = QPushButton("☰  Menyunu gizlət")
+        self.side_btn.setToolTip("Sol menyunu gizlədin / göstərin — cədvələ daha çox yer qalır")
+        self.side_btn.clicked.connect(self.toggle_sidebar)
+        ph.addWidget(self.side_btn)
         lab = QLabel("Hesabat dövrü:")
         lab.setStyleSheet(f"font-weight:700; color:{theme.NAVY};")
         ph.addWidget(lab)
@@ -2418,7 +2427,9 @@ class Main(QMainWindow):
                 gap.setSizeHint(QSize(10, 12))
                 self.nav.addItem(gap)
                 it = QListWidgetItem("▾  " + entry)
-                it.setFlags(Qt.NoItemFlags)
+                it.setFlags(Qt.ItemIsEnabled)
+                it.setData(Qt.UserRole, "group")
+                it.setToolTip("Basın — qrupu açın / bağlayın")
                 f = it.font()
                 f.setBold(True)
                 f.setPointSizeF(8.5)
@@ -2467,6 +2478,7 @@ class Main(QMainWindow):
             self.stack.addWidget(w)
             self.row_to_stack[row] = self.stack.count() - 1
         self.nav.currentRowChanged.connect(self._nav)
+        self.nav.itemClicked.connect(self._toggle_nav_group)
         self.nav.setCurrentRow(0)
         h.addWidget(self.nav)
         h.addWidget(self.stack, 1)
@@ -2483,6 +2495,23 @@ class Main(QMainWindow):
         store_mod.SAVE_HOOK = lambda st: self.sync.schedule(st) if self.sync.configured else None
 
     # --- naviqasiya
+    def _toggle_nav_group(self, it):
+        if it.data(Qt.UserRole) != "group":
+            return
+        r = self.nav.row(it)
+        closing = it.text().startswith("▾")
+        it.setText(("▸  " if closing else "▾  ") + it.text()[3:])
+        for j in range(r + 1, self.nav.count()):
+            x = self.nav.item(j)
+            if x.data(Qt.UserRole) == "group" or (not x.text() and x.flags() == Qt.NoItemFlags):
+                break
+            x.setHidden(closing)
+
+    def toggle_sidebar(self):
+        vis = not self.nav.isVisible()
+        self.nav.setVisible(vis)
+        self.side_btn.setText("☰  Menyunu gizlət" if vis else "☰  Menyu")
+
     def _nav(self, i):
         if i not in self.row_to_stack:
             return
@@ -2539,6 +2568,29 @@ class Main(QMainWindow):
             if not ask_code(self, self.users, self.user, "Təsdiq", "Məqamı OK kimi qeyd etmək üçün"):
                 return
             st.ack(key, note.strip())
+        self.files_page.run()
+
+    def toggle_advance(self, v):
+        st = self.files_page.store
+        if not st or not v:
+            return
+        lst = st.data.setdefault("advance_voens", [])
+        name = self.R.parties[v].name if self.R and v in self.R.parties else v
+        if v in lst:
+            if QMessageBox.question(self, "Avans qeydi", f"{name} (VÖEN {v}) «avansla ödənilən» siyahısından "
+                                    "çıxarılsın? Qaiməsiz ödənişlər yenidən «⚠ yoxlayın» kimi göstəriləcək.") \
+                    != QMessageBox.Yes:
+                return
+            lst.remove(v)
+            st.log("Avans qeydi silindi", f"{name} · VÖEN {v}")
+        else:
+            if QMessageBox.question(self, "Avans qeydi", f"{name} (VÖEN {v}) qaimədən əvvəl avansla ödənilən "
+                                    "təchizatçı kimi qeyd edilsin?\n\nOnun qaiməsiz ödənişləri «avans» kimi "
+                                    "göstəriləcək və «Yoxlanılmalı»ya düşməyəcək.") != QMessageBox.Yes:
+                return
+            lst.append(v)
+            st.log("Avans qeydi", f"{name} · VÖEN {v}")
+        st.save()
         self.files_page.run()
 
     def add_manual(self, kind):

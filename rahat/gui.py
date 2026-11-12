@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDate
                                QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
                                QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
-                               QSizePolicy, QStackedWidget, QTableWidget, QTableWidgetItem,
+                               QSizePolicy, QStackedWidget, QTableView, QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
 from . import APP_NAME, APP_VERSION, COMPANY, DEDICATED_TO, PRESENTED_BY, PRESENTED_URL, theme
@@ -254,9 +254,79 @@ class ReportTable(QTableWidget):
         self.setMouseTracking(True)
         self.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        # başlıq sətirləri sabit qalır (aşağı sürüşdürəndə görünür)
+        self.frozen = QTableView(self)
+        self.frozen.setModel(self.model())
+        self.frozen.setFocusPolicy(Qt.NoFocus)
+        self.frozen.horizontalHeader().setVisible(False)
+        self.frozen.verticalHeader().setVisible(False)
+        self.frozen.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.frozen.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.frozen.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.frozen.setFrameShape(QFrame.NoFrame)
+        self.frozen.setSelectionMode(QAbstractItemView.NoSelection)
+        self.frozen.setWordWrap(True)
+        self.frozen.setStyleSheet("QTableView{border:none; border-bottom:2px solid #0B2E59;}")
+        self.frozen.clicked.connect(lambda idx: self._head_clicked(idx.row(), idx.column()))
+        self.frozen.hide()
+        self.horizontalScrollBar().valueChanged.connect(self.frozen.horizontalScrollBar().setValue)
+        self.horizontalHeader().sectionResized.connect(lambda c, o, n: (self.frozen.setColumnWidth(c, n),
+                                                                        self._place_frozen()))
+        self.verticalHeader().sectionResized.connect(lambda r, o, n: (self.frozen.setRowHeight(r, n),
+                                                                      self._place_frozen()))
+        self.verticalScrollBar().valueChanged.connect(lambda _: self._place_frozen())
         self.cellDoubleClicked.connect(self._clicked)      # kartoçka — iki kliklə
         self.cellClicked.connect(self._head_clicked)
         self.cellEntered.connect(self._entered)
+
+    # --- sabit başlıq
+    def _nhead(self):
+        return len(self.grid.head_rows) if self.grid else 0
+
+    def sync_frozen(self):
+        n = self._nhead()
+        fz = self.frozen
+        if not n or self.rowCount() <= n:
+            fz.hide()
+            return
+        fz.clearSpans()
+        for r in range(self.rowCount()):
+            fz.setRowHidden(r, r >= n)
+            if r < n:
+                fz.setRowHeight(r, self.rowHeight(r))
+        for c in range(self.columnCount()):
+            fz.setColumnHidden(c, self.isColumnHidden(c))
+            fz.setColumnWidth(c, self.columnWidth(c))
+        for r, cells in enumerate(self.grid.head_rows):
+            for c, cell in enumerate(cells):
+                if cell is not None and (cell.rowspan > 1 or cell.colspan > 1):
+                    fz.setSpan(r, c, cell.rowspan, cell.colspan)
+        fz.setFont(self.font())
+        self._place_frozen()
+
+    def _place_frozen(self):
+        n = self._nhead()
+        fz = self.frozen
+        if not n or self.rowCount() <= n:
+            fz.hide()
+            return
+        if self.verticalScrollBar().value() <= 0:
+            fz.hide()               # yuxarıdadırsa — əsl başlıq görünür
+            return
+        h = sum(self.rowHeight(r) for r in range(n))
+        fw = self.frameWidth()
+        fz.setGeometry(fw, fw, self.viewport().width(), h + 2)
+        fz.horizontalScrollBar().setValue(self.horizontalScrollBar().value())
+        fz.show()
+        fz.raise_()
+
+    def setColumnHidden(self, c, hide):
+        super().setColumnHidden(c, hide)
+        self.frozen.setColumnHidden(c, hide)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._place_frozen()
 
     def _ref_at(self, r, c):
         it = self.item(r, c)
@@ -384,11 +454,13 @@ class ReportTable(QTableWidget):
                 if isinstance(v, str) and len(v) > 40:
                     it.setToolTip(v)
                 if cell.ref is not None and ((isinstance(v, (int, float)) and abs(v) >= 0.005)
-                                             or (isinstance(cell.ref, tuple) and cell.ref[:1] in (("edit",), ("issue",)))):
+                                             or (isinstance(cell.ref, tuple) and cell.ref[:1] in (("edit",), ("issue",), ("advmark",)))):
                     it.setData(Qt.UserRole, len(self.refs))
                     self.refs.append(cell.ref)
                     it.setToolTip("Redaktə üçün iki dəfə basın" if cell.ref[:1] == ("edit",) else
                                   "OK kimi qeyd etmək üçün iki dəfə basın" if cell.ref[:1] == ("issue",) else
+                                  "İki dəfə basın — bu təchizatçını «avansla ödənilən» kimi qeyd edin / qeydi silin"
+                                  if cell.ref[:1] == ("advmark",) else
                                   "Bu rəqəmin necə yarandığını görmək üçün iki dəfə basın")
                 if cell.drag is not None and self.on_move:
                     it.setData(Qt.UserRole + 1, len(self.drags))
@@ -469,6 +541,7 @@ class ReportTable(QTableWidget):
                 self.setRowHeight(ri, h * 3 + 6)
             else:
                 self.setRowHeight(ri, h + 5)
+        self.sync_frozen()
 
     def fit_to_width(self):
         if not self.grid:
