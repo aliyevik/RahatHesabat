@@ -398,6 +398,8 @@ class BankReport:
                 line.append(n(sign * sum(r.op.amount for r in rs), "alt2" if c in BY_NAME else ITEM, ("cat", c, None)))
                 g.rows.append(line)
                 if c in BY_NAME:
+                    head_i = len(g.rows) - 1
+                    g.groups[head_i] = []
                     names = defaultdict(list)
                     for r in rs:
                         names[(r.op.cp_voen, r.name)].append(r)
@@ -408,6 +410,7 @@ class BankReport:
                                           ref=("cp", (c, v, nm), m)))
                         line.append(n(sign * sum(r.op.amount for r in lst), ref=("cp", (c, v, nm), None)))
                         g.rows.append(line)
+                        g.groups[head_i].append(len(g.rows) - 1)
             rs = [r for r in mine if r.category in cats]
             line = [t("Cəmi " + title.lower(), TOTAL)]
             for m in M:

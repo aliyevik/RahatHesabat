@@ -1670,6 +1670,12 @@ class GridPage(QWidget):
         self.monthly.setVisible(hasattr(cls, "monthly"))
         self.monthly.toggled.connect(self._monthly_toggled)
         bar.addWidget(self.monthly)
+        self.grp_btn = QPushButton("⊞ Hamısını aç")
+        self.grp_btn.setCheckable(True)
+        self.grp_btn.setVisible(cls is BankReport)
+        self.grp_btn.toggled.connect(lambda on: (self.grp_btn.setText("⊟ Hamısını bağla" if on else "⊞ Hamısını aç"),
+                                                 self.set_all_groups(on)))
+        bar.addWidget(self.grp_btn)
         z_out, z_in = QPushButton("−"), QPushButton("+")
         for zb in (z_out, z_in):
             zb.setFixedWidth(38)
@@ -1722,12 +1728,14 @@ class GridPage(QWidget):
         self.flt_lbl.setVisible(False)
         self.flt_clear.setVisible(False)
         rl.addLayout(fl)
-        tip = QLabel("İpucu: sütun başlığına bir dəfə basın — o sütun üzrə filtr; rəqəmə iki dəfə basın — kartoçka.")
+        tip = QLabel("İpucu: sütun başlığına bir dəfə basın — o sütun üzrə filtr; rəqəmə iki dəfə basın — kartoçka" + ("; ⊞ işarəli sətrə basın — siyahını açır / bağlayır." if cls is BankReport else "."))
         tip.setObjectName("muted")
         tip.setStyleSheet("font-size:8.5pt;")
         rl.addWidget(tip)
         self.col_filters = {}
         self.table = ReportTable(self.show_detail, None, self.zoom, self.open_col_filter)
+        self.table.cellClicked.connect(self.toggle_group)
+        self.expanded = set()          # açıq qruplar (başlıq mətni ilə)
         rl.addWidget(self.table, 1)
         self.views.addWidget(rep)
 
@@ -1905,6 +1913,48 @@ class GridPage(QWidget):
         self.mark_headers()
         self.apply_search()
 
+    # --- qruplar («+» ilə açılan alt sətirlər; susmaya görə bağlı)
+    def _group_key(self, gi):
+        c = self.grid.rows[gi][0]
+        return str(c.value) if c is not None else str(gi)
+
+    def mark_groups(self):
+        g = self.grid
+        if not g or not getattr(g, "groups", None):
+            return
+        start = len(g.head_rows)
+        for gi, kids in g.groups.items():
+            it = self.table.item(start + gi, 0)
+            if it is None or not kids:
+                continue
+            base = self._group_key(gi)
+            sign = "⊟" if base in self.expanded else "⊞"
+            it.setText(f"{sign}  {base}  ({len(kids)})")
+            it.setToolTip("Basın — siyahını açmaq / bağlamaq")
+
+    def toggle_group(self, r, c):
+        g = self.grid
+        if not g or not getattr(g, "groups", None):
+            return
+        gi = r - len(g.head_rows)
+        if gi not in g.groups or not g.groups[gi]:
+            return
+        key = self._group_key(gi)
+        if key in self.expanded:
+            self.expanded.discard(key)
+        else:
+            self.expanded.add(key)
+        self.mark_groups()
+        self.apply_search()
+
+    def set_all_groups(self, open_: bool):
+        g = self.grid
+        if not g:
+            return
+        self.expanded = {self._group_key(gi) for gi in g.groups} if open_ else set()
+        self.mark_groups()
+        self.apply_search()
+
     def visible_rows(self):
         start = len(self.grid.head_rows)
         return [r - start for r in range(start, self.table.rowCount()) if not self.table.isRowHidden(r)]
@@ -1918,7 +1968,15 @@ class GridPage(QWidget):
         flt = [(idx[lab], allowed) for lab, allowed in self.col_filters.items() if lab in idx]
         start = len(self.grid.head_rows)
         shown = 0
+        collapsed = set()
+        if not q and not flt:
+            for gi, kids in (getattr(self.grid, "groups", None) or {}).items():
+                if self._group_key(gi) not in self.expanded:
+                    collapsed.update(kids)
         for r in range(start, self.table.rowCount()):
+            if r - start in collapsed:
+                self.table.setRowHidden(r, True)
+                continue
             cells = self.grid.rows[r - start]
             fixed = cells and cells[0] is not None and cells[0].style in ("total", "section", "note")
             ok = True
@@ -2005,6 +2063,7 @@ class GridPage(QWidget):
             self.table.apply_zoom(self.user_pt)
         self.apply_columns()
         self.mark_headers()
+        self.mark_groups()
         self.apply_search()
 
     def zoom(self, d):
@@ -2093,7 +2152,7 @@ class GridPage(QWidget):
         footer = f"{APP_NAME} — təqdim edir: {PRESENTED_BY} ({PRESENTED_URL})"
         try:
             g0 = self.grid
-            if self.col_filters or self.search.text().strip():
+            if self.col_filters or self.search.text().strip() or len(self.visible_rows()) < len(g0.rows):
                 vis = set(self.visible_rows())
                 g0 = Grid(g0.title, g0.subtitle, g0.ncols, g0.head_rows,
                           [row for i, row in enumerate(g0.rows) if i in vis], g0.col_widths, g0.top_lines,

@@ -33,6 +33,7 @@ class Grid:
     signature: list[str] = field(default_factory=list)
     footnote: str = ""
     stacked: bool = False       # alt-alta görünüş (yalnız ekran üçün)
+    groups: dict = field(default_factory=dict)   # başlıq sətri → [alt sətirlər] (ekranda «+» ilə açılır)
 
 
 def _num(v, style=ITEM, ref=None):
