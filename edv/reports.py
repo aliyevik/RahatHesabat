@@ -648,6 +648,14 @@ class Debts:
             g.rows.append([t("CƏMİ", TOTAL, colspan=3), None, None] + [n(tot[k], TOTAL) for k in keys] +
                           [t("", TOTAL)])
             g.top_lines = [("Son borc — əsas məbləğ:", round(tot["n1"], 2)), ("Son borc — ƏDV:", round(tot["v1"], 2))]
+            inr = [r for r in self.R.bank if self.a <= r.op.date <= self.b]
+            out_s = round(-sum(r.op.amount for r in inr if r.category == OUT_SUPPLIER), 2)
+            back = round(sum(r.op.amount for r in inr if r.category == IN_SUPPLIER), 2)
+            ok = abs(out_s - back - tot["np"]) < 0.02
+            g.top_lines.append(("Bank xülasəsi ilə:", f"təchizatçılara ödəniş {fmt_money(out_s)}"
+                                + (f" − geri qaytarma {fmt_money(back)}" if back else "")
+                                + f" = {fmt_money(out_s - back)} " + ("✓" if ok else
+                                f"⚠ cədvəldə {fmt_money(tot['np'])}")))
             g.footnote = ("Əsas məbləğ bankla, ƏDV depozitlə ödənilir; ödənişlər FIFO ilə əvvəl ilkin qalığı, sonra "
                           "cari qaimələri bağlayır. Əvəzləşmə dövrü — ƏDV-nin depozitdən ödənildiyi ay(lar). "
                           "Mənfi qalıq — avans.")
