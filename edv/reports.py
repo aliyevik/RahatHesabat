@@ -644,6 +644,8 @@ class Debts:
                 ptxt = f"… {ptxt} ({len(pdts)} ödəniş)"
             row.append(t(ptxt or "—", ITEM, "center"))
             g.rows.append(row)
+        rc = [i for i in getattr(self.R, "role_conflicts", []) if i.side == self.side]
+        early = getattr(self.R, "early", 0)
         if cred:
             g.rows.append([t("CƏMİ", TOTAL, colspan=3), None, None] + [n(tot[k], TOTAL) for k in keys] +
                           [t("", TOTAL)])
@@ -656,6 +658,7 @@ class Debts:
                                 + (f" − geri qaytarma {fmt_money(back)}" if back else "")
                                 + f" = {fmt_money(out_s - back)} " + ("✓" if ok else
                                 f"⚠ cədvəldə {fmt_money(tot['np'])}")))
+            self._warn(g, rc, early)
             g.footnote = ("Əsas məbləğ bankla, ƏDV depozitlə ödənilir; ödənişlər FIFO ilə əvvəl ilkin qalığı, sonra "
                           "cari qaimələri bağlayır. Əvəzləşmə dövrü — ƏDV-nin depozitdən ödənildiyi ay(lar). "
                           "Mənfi qalıq — avans.")
@@ -667,12 +670,23 @@ class Debts:
                        ("Cəmi borc:", round(tot["n1"] + tot["v1"], 2))]
         if with_hes:
             g.top_lines.insert(0, ("Hesablanmış ƏDV (18%):", round(tot["hes"], 2)))
+        self._warn(g, rc, early)
         if bad:
             g.top_lines.append(("⚠", f"{bad} kontragentdə ƏDV borcu əsas borcun 18%-nə uyğun gəlmir"))
         g.footnote = ("Əsas məbləğ bankla, ƏDV depozitlə ödənilir. 18% yoxlaması: əsas borcun 18%-i ƏDV borcu ilə "
                       "müqayisə edilir (məs. əsas ödənib, ƏDV ödənməyibsə — qeyd olunur). Mənfi qalıq — avans. "
                       "Hesaba MT qaimələri və avans qaimələrinin MT ilə bağlanmamış hissəsi alınır.")
         return g
+
+    def _warn(self, g, rc, early):
+        if rc:
+            names = ", ".join(sorted({i.name for i in rc}))
+            g.top_lines.append(("⚠", f"İlkin qalıqda {'Kreditor' if self.side == 'alis' else 'Debitor'} yazılıb, amma "
+                                     f"qaimələrə görə {'alıcıdır' if self.side == 'alis' else 'təchizatçıdır'}: {names}. "
+                                     f"«Şirkət və baza» → «İlkin qalıqlar»da növünü dəyişin."))
+        if early:
+            g.top_lines.append(("⚠", f"{early} sətir ilkin qalıq tarixindən əvvəl olduğu üçün hesaba düşməyib — "
+                                     f"«Yoxlanılmalı»ya baxın."))
 
     # ---- aylar üzrə görünüş
     def grid_monthly(self, signature, with_hes=False):

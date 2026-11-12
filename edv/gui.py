@@ -1391,6 +1391,7 @@ class BasePage(QWidget):
             QMessageBox.warning(self, "Bərpa olunmadı", str(ex))
             return
         self.refresh()
+        self.run()
         QMessageBox.information(self, "Bərpa", "Baza bərpa olundu.")
 
     def open_db_dir(self):
@@ -1599,6 +1600,7 @@ class BasePage(QWidget):
             od = dt.date.fromisoformat(dlg.result_data["date"])
             self.store.set_openings(dlg.result_data, od + dt.timedelta(days=1))
             self.refresh()
+            self.run()                 # hesabatlar yeni ilkin qalıqlarla dərhal yenilənir
 
     # --- dövr
     def _set_month(self, m):
@@ -2359,6 +2361,11 @@ class Main(QMainWindow):
         self.p_info = QLabel("")
         self.p_info.setObjectName("muted")
         ph.addWidget(self.p_info, 1)
+        rb = QPushButton("⟳ Yenilə")
+        rb.setToolTip("Bütün hesabatları bazadakı son məlumatla yenidən hesabla (F5)")
+        rb.setShortcut(QKeySequence("F5"))
+        rb.clicked.connect(lambda: bp.run())
+        ph.addWidget(rb)
         self.sync_lbl = QLabel("")
         self.sync_lbl.setObjectName("muted")
         ph.addWidget(self.sync_lbl)

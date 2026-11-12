@@ -191,6 +191,8 @@ class Result:
     taxable0: list = field(default_factory=list)   # 0% / azad qaimələrə daxilolmalar
     budget_opening: float = 0.0                    # büdcə ilə ƏDV hesablaşması: ilkin qalıq
     bank_closing: tuple | None = None              # (tarix, məbləğ) — son çıxarışdakı «Son qalıq»
+    role_conflicts: list = field(default_factory=list)   # növü qaimələrə uyğun gəlməyən ilkin qalıqlar
+    early: int = 0                                 # başlanğıcdan əvvəl qalan (hesaba düşməyən) sətirlər
 
     # ---- köməkçi süzgəclər
     def in_period(self, d, a, b):
@@ -238,6 +240,10 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
     openings = openings or {}
     od = opening_date(files)
     early = 0
+    # kontragentin rolu bütün qaimələrə görə (başlanğıcdan əvvəlkilər də daxil): alıcı / təchizatçı
+    all_sup = {i.voen for i in purchases}
+    all_cus = {i.voen for i in sales}
+    first_day = min([x.date for x in purchases + sales + deposit + bank_ops], default=None)
     pre_bank = pre_dep = 0.0          # başlanğıcdan əvvəlki (bazaya düşməyən) əməliyyatlar
     if openings.get("start"):
         start = dt.date.fromisoformat(openings["start"])
@@ -278,8 +284,9 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
     issues: list[Issue] = []
     if early:
         issues.append(Issue("Baza: başlanğıc tarixindən əvvəlki sətirlər nəzərə alınmadı", od, "", "", 0.0,
-                            f"{early} sətir {fmt(od + dt.timedelta(days=1))} tarixindən əvvəldir. Onların təsiri "
-                            f"ilkin qalıqlarda olmalıdır.", None))
+                            f"{early} sətir (qaimə / bank / depozit) {fmt(od + dt.timedelta(days=1))} tarixindən "
+                            f"əvvəldir və hesablamaya düşmür. Bu sətirlər ilkin qalığa daxil deyilsə, ilkin qalıq "
+                            f"tarixini {fmt(first_day - dt.timedelta(days=1))} edin.", None))
 
     # ---- kontragentlər (VÖEN → rəsmi ad)
     parties: dict[str, Party] = {}
@@ -295,10 +302,10 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
             p = parties.setdefault(o.voen, Party(o.voen, o.name))
             p.names_seen.add(o.name)
 
-    sup_voens = {i.voen for i in purchases}
-    cus_voens = {i.voen for i in sales}
-    real_sup = {i.voen for i in purchases if not i.is_opening}
-    real_cus = {i.voen for i in sales if not i.is_opening}
+    sup_voens = {i.voen for i in purchases} | all_sup
+    cus_voens = {i.voen for i in sales} | all_cus
+    real_sup, real_cus = all_sup, all_cus
+    role_conflicts = []
     for inv in purchases + sales:
         if not inv.is_opening:
             continue
@@ -306,10 +313,12 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
             issues.append(Issue("İlkin qalıq: Kreditor / Debitor növünü yoxlayın", inv.date, inv.voen, inv.name,
                                 inv.yekun, "Kreditor kimi yazılıb, amma bu VÖEN yalnız göndərilən qaimələrdə (alıcı) "
                                 "var. Debitor olmalıdırsa — «İlkin qalıqlar»da növünü dəyişin.", inv))
+            role_conflicts.append(inv)
         if inv.side == "satis" and inv.voen in real_sup and inv.voen not in real_cus:
             issues.append(Issue("İlkin qalıq: Kreditor / Debitor növünü yoxlayın", inv.date, inv.voen, inv.name,
                                 inv.yekun, "Debitor kimi yazılıb, amma bu VÖEN yalnız gələn qaimələrdə (təchizatçı) "
                                 "var. Kreditor olmalıdırsa — «İlkin qalıqlar»da növünü dəyişin.", inv))
+            role_conflicts.append(inv)
 
     # ---- bank əməliyyatlarının təsnifatı
     bank_rows: list[BankRow] = []
@@ -604,7 +613,7 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
                   s1 + s2, unalloc, sl1 + sl2, parties, issues, dep_open, rng,
                   bank_open, od,
                   base, dict(adv_used), dict(adv_uses), dict(mt_adv), taxable, taxable0,
-                  float(openings.get("budget") or 0.0), bank_close)
+                  float(openings.get("budget") or 0.0), bank_close, role_conflicts, early)
 
 
 def check_files(files: list[SourceFile]) -> list[str]:
