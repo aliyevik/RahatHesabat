@@ -212,6 +212,11 @@ class Store:
             cur = self.data["bank_openings"].get(f.account)
             if cur is None or f.period[0].isoformat() < cur[0]:
                 self.data["bank_openings"][f.account] = [f.period[0].isoformat(), f.opening or 0.0]
+        if f.kind == "bank" and f.period and f.closing is not None:
+            cl = self.data.setdefault("bank_closings", {})
+            cur = cl.get(f.account)
+            if cur is None or f.period[1].isoformat() >= cur[0]:
+                cl[f.account] = [f.period[1].isoformat(), f.closing]
         if not self.data.get("company_name"):
             self.data["company_name"] = f.company_name
         self.data["imports"].append({
@@ -296,6 +301,10 @@ class Store:
                 sf.opening = self.data["deposit_opening"][1]
             if k == "bank":
                 sf.opening = sum(v[1] for v in self.data["bank_openings"].values())
+                cl = self.data.get("bank_closings") or {}
+                if cl:
+                    sf.closing = sum(v[1] for v in cl.values())
+                    sf.period = (sf.period[0], max(dt.date.fromisoformat(v[0]) for v in cl.values()))
             out.append(sf)
         return out
 

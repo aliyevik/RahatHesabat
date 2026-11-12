@@ -430,6 +430,16 @@ class BankReport:
         accs = sorted({r.op.account for r in self.R.bank if r.op.account})
         g.top_lines = [("Hesab(lar):", ", ".join(accs) or "—"),
                        ("Əməliyyat sayı:", str(len(self.rows)))]
+        bc = getattr(self.R, "bank_closing", None)
+        if bc and self.a <= bc[0] <= self.b:
+            prog = round(opening + sum(r.op.amount for r in self.rows if r.op.date <= bc[0]), 2)
+            diff = round(prog - bc[1], 2)
+            g.top_lines.append((f"Çıxarışa görə qalıq ({fmt_date(bc[0])}):", bc[1]))
+            if abs(diff) > 0.01:
+                g.top_lines.append(("⚠", f"Proqramdakı qalıq {fmt_money(prog)} — çıxarışdan {fmt_money(diff)} fərqlənir. "
+                                         f"İlkin qalığın tarixini və məbləğini, yüklənməmiş çıxarışları yoxlayın."))
+            else:
+                g.top_lines.append(("✓", "Qalıq çıxarışla üst-üstə düşür"))
         if not self.rows:
             last = max((r.op.date for r in self.R.bank), default=None)
             msg = (f"Bu dövrdə bank hesabında heç bir əməliyyat yoxdur. Bazadakı son bank əməliyyatı: "

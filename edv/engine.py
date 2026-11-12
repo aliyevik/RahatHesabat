@@ -190,6 +190,7 @@ class Result:
     taxable: list = field(default_factory=list)
     taxable0: list = field(default_factory=list)   # 0% / azad qaimələrə daxilolmalar
     budget_opening: float = 0.0                    # büdcə ilə ƏDV hesablaşması: ilkin qalıq
+    bank_closing: tuple | None = None              # (tarix, məbləğ) — son çıxarışdakı «Son qalıq»
 
     # ---- köməkçi süzgəclər
     def in_period(self, d, a, b):
@@ -237,10 +238,15 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
     openings = openings or {}
     od = opening_date(files)
     early = 0
+    pre_bank = pre_dep = 0.0          # başlanğıcdan əvvəlki (bazaya düşməyən) əməliyyatlar
     if openings.get("start"):
         start = dt.date.fromisoformat(openings["start"])
         od = start - dt.timedelta(days=1)
         n0 = len(purchases) + len(sales) + len(deposit) + len(bank_ops)
+        pre_bank = round(sum(o.amount for o in bank_ops if o.date < start), 2)
+        pre_dep = round(sum((o.medaxil or 0) - (o.mexaric or 0) for o in
+                            {(o.doc, o.date, o.medaxil, o.mexaric, o.voen): o for o in deposit}.values()
+                            if o.date < start and o.executed), 2)
         purchases = [i for i in purchases if i.date >= start]
         sales = [i for i in sales if i.date >= start]
         deposit = [o for o in deposit if o.date >= start]
@@ -555,9 +561,24 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
         if f.period:
             ds += [f.period[0], min(f.period[1], dt.date.today())]
     rng = (min(ds), max(ds)) if ds else (dt.date.today(), dt.date.today())
-    dep_open = next((f.opening for f in files if f.kind == "depozit" and f.opening is not None), 0.0)
+    # Çıxarışdakı «İlkin qalıq» çıxarışın ilk gününün əvvəlinə aiddir. Baza daha gec başlayırsa,
+    # aradakı əməliyyatlar qalığa əlavə olunur (əllə yazılmış rəqəm çıxarışdakı ilə eynidirsə — o da).
+    dep_file = next((f.opening for f in files if f.kind == "depozit" and f.opening is not None), 0.0)
+    dep_open = dep_file + pre_dep
     if openings.get("deposit") is not None:
         dep_open = float(openings["deposit"])
+        if abs(dep_open - dep_file) < 0.005 and pre_dep:
+            dep_open += pre_dep
+    bank_file = sum((f.opening or 0) for f in files if f.kind == "bank")
+    bank_open = bank_file + pre_bank
+    if openings.get("bank") is not None:
+        bank_open = float(openings["bank"])
+        if abs(bank_open - bank_file) < 0.005 and pre_bank:
+            bank_open += pre_bank
+    bank_close = None
+    cl = [f for f in files if f.kind == "bank" and f.closing is not None and f.period]
+    if cl:
+        bank_close = (max(f.period[1] for f in cl), round(sum(f.closing for f in cl), 2))
     for inv in purchases:
         if inv.is_opening and any(x.invoice is inv and x.kind == "vat" for x in allocs):
             issues.append(Issue("Alış: keçən dövr borcuna ödənilən ƏDV", inv.date, inv.voen, inv.name,
@@ -566,10 +587,9 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
                                 "üçün «Əlavə 1» faylına avtomatik düşmür — lazım olsa e-taxes-da əl ilə əlavə edin.", inv))
     return Result(company_voen, company_name, files, purchases, sales, deposit, bank_rows, allocs,
                   s1 + s2, unalloc, sl1 + sl2, parties, issues, dep_open, rng,
-                  (float(openings["bank"]) if openings.get("bank") is not None
-                   else sum((f.opening or 0) for f in files if f.kind == "bank")), od,
+                  bank_open, od,
                   base, dict(adv_used), dict(adv_uses), dict(mt_adv), taxable, taxable0,
-                  float(openings.get("budget") or 0.0))
+                  float(openings.get("budget") or 0.0), bank_close)
 
 
 def check_files(files: list[SourceFile]) -> list[str]:
