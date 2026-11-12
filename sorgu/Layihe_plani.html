@@ -1,0 +1,126 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+body{font-family:'DejaVu Sans',Arial,sans-serif;font-size:11pt;color:#1a1a1a;margin:28px}
+h1{color:#0B2E59;border-bottom:3px solid #1565C0;padding-bottom:6px} h2{color:#1565C0;margin-top:22px}
+table{border-collapse:collapse;width:100%;margin:8px 0} th{background:#0B2E59;color:#fff;text-align:left;padding:6px}
+td{border:1px solid #B7C9E2;padding:6px;vertical-align:top} tr:nth-child(even) td{background:#F4F8FD}
+</style></head><body><h1>Mühasibat sistemi — layihə planı</h1>
+<p>Sizin cavablarınız (A1–A7) və qalan suallar üzrə mənim tövsiyələrim əsasında.</p>
+<h2>1. Əsas qərarlar</h2>
+<table>
+<thead>
+<tr>
+<th>Mövzu</th>
+<th>Qərar</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Kimlər üçün</td>
+<td>Sizin şirkətləriniz + sonra müştərilərə satış / xidmət (çox müştərili sistem)</td>
+</tr>
+<tr>
+<td>İstifadəçilər</td>
+<td>Bir ofisdə bir neçə nəfər + internetlə müxtəlif yerlərdən</td>
+</tr>
+<tr>
+<td>Platforma</td>
+<td>Brauzerdə işləyən sistem + Windows proqramı (eyni interfeys, pəncərədə açılır)</td>
+</tr>
+<tr>
+<td>Baza</td>
+<td>Serverdə PostgreSQL. Kiçik ofis üçün ofis kompüteri server ola bilər</td>
+</tr>
+<tr>
+<td>Uçot standartı</td>
+<td>Şirkət kartında seçilir: Milli standartlar (kommersiya), kiçik sahibkarlıq üçün sadələşdirilmiş, MHBS</td>
+</tr>
+<tr>
+<td>Vergi rejimi</td>
+<td>Şirkət kartında, tarixə görə: ƏDV + mənfəət, sadələşdirilmiş, fərdi sahibkar</td>
+</tr>
+<tr>
+<td>Valyuta</td>
+<td>Yalnız AZN (struktur valyutaya hazır qalır, sonra əlavə etmək olar)</td>
+</tr>
+<tr>
+<td>Analitika</td>
+<td>Filial, xərc mərkəzi, layihə / obyekt, anbar + kontragent, nomenklatura, işçi</td>
+</tr>
+<tr>
+<td>Kontragentlər</td>
+<td>531 / 211 + kontragent analitikası (alt hesab açmadan)</td>
+</tr>
+<tr>
+<td>Avanslar</td>
+<td>Ayrıca hesablarda, qaimə gələndə avtomatik əvəzləşir</td>
+</tr>
+<tr>
+<td>Maya dəyəri</td>
+<td>FIFO (uçot siyasətində seçim: FIFO / orta çəkili)</td>
+</tr>
+<tr>
+<td>Dövrün bağlanması</td>
+<td>Ay bağlanır, açmaq yalnız admin kodu ilə, jurnalda qeyd</td>
+</tr>
+</tbody>
+</table>
+<h2>2. Arxitektura</h2>
+<ul>
+<li><strong>Server</strong>: Python (FastAPI) + PostgreSQL. Bütün hesablamalar serverdə.</li>
+<li><strong>İnterfeys</strong>: brauzerdə işləyən tətbiq. Windows proqramı onu ayrıca pəncərədə açır (ikinci interfeys yazılmır).</li>
+<li><strong>Çox müştərili</strong>: hər müştəri (təşkilat) ayrıca; təşkilatın içində bir neçə şirkət.</li>
+<li><strong>Təhlükəsizlik</strong>: istifadəçi rolları, hər modula icazə (baxış / yazma / təsdiq), bütün dəyişikliklərin jurnalı.</li>
+<li><strong>Ehtiyat nüsxə</strong>: serverdə gündəlik avtomatik + istənilən vaxt Excel / JSON ixracı.</li>
+</ul>
+<h2>3. Hesablama məntiqi (bütün modullar üçün eyni)</h2>
+<p>Hər modul <strong>sənəd</strong> yaradır, sənəd təsdiqlənəndə <strong>müxabirləşmələr</strong> (jurnal yazılışları) avtomatik yaranır. Bütün hesabatlar yalnız jurnaldan qurulur.
+Beləliklə borc, ƏDV, anbar qalığı, əmək haqqı borcu — hamısı eyni yerdən hesablanır və bir-birinə uyğun gəlir.</p>
+<p>Sənəd → yazılış qaydaları cədvəldə saxlanılır və şirkət üzrə dəyişdirilə bilər.</p>
+<h2>4. Mərhələlər</h2>
+<table>
+<thead>
+<tr>
+<th>№</th>
+<th>Mərhələ</th>
+<th>Nə daxildir</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Əsas</td>
+<td>Server, baza, istifadəçilər və rollar, şirkətlər, hesablar planı (rəsmi + alt hesablar), analitika kataloqları, əl ilə müxabirləşmə, ilkin qalıqlar, dövriyyə cədvəli, hesab kartı, baş kitab, ayın bağlanması</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Alış, satış, bank, kassa</td>
+<td>E-qaimə yükləmə (alış / satış), bank çıxarışı (qaydaları öyrənən), ƏDV depozit, kassa orderləri, avanslar, 211 / 531 analitikası, ƏDV bəyannaməsi və Əlavə 1 (indiki ƏDV proqramının məntiqi jurnal üzərində), köhnə ƏDV bazasının köçürülməsi</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Nomenklatura və anbar</td>
+<td>Növlər, qruplar (ağac), vahidlər, barkod, partiya / son istifadə tarixi, qiymət növləri, çoxanbar, köçürmə, inventarizasiya, silinmə, FIFO maya dəyəri, alış xərclərinin paylanması, e-qaimə mallarının nomenklaturaya uyğunlaşdırılması, satış nomenklatura ilə və ya cəm</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Əmək haqqı və kadr</td>
+<td>İşçi kartı, ştat, tabel, hesablamalar (məzuniyyət, xəstəlik, mükafat, ezamiyyə), tutulmalar (dərəcələr tarixli cədvəldə), bank ödəniş faylı, DSMF / gəlir vergisi hesabatları, xərclərə paylanma</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Əsas vəsaitlər</td>
+<td>Kart, mühasibat və vergi amortizasiyası paralel, təmir, yenidən qiymətləndirmə, silinmə</td>
+</tr>
+<tr>
+<td>6</td>
+<td>İstehsalat</td>
+<td>Texnoloji kart (versiyalı), yarımfabrikat, istehsal sifarişi, birbaşa və ümumi xərclər, planlı / faktiki maya dəyəri, brak və itkilər</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Hesabatlar</td>
+<td>Balans, mənfəət və zərər, pul vəsaitlərinin hərəkəti, kapitalda dəyişiklik, idarəetmə hesabatları (marja, büdcə — fakt, obyektlər üzrə mənfəət), Rahat Yaşam abunə hesablaması</td>
+</tr>
+</tbody>
+</table>
+<p>Hər mərhələ ayrıca təhvil verilir və işlək olur; növbəti mərhələ əvvəlkinin üzərində qurulur.</p></body></html>
