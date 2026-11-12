@@ -506,7 +506,7 @@ class Debts:
                 ev.append((r.op.date, "Banka daxilolma", r.op.doc, 0, 0, r.op.amount, 0, r.op.teyinat[:90]))
             elif not sale and r.category == OUT_SUPPLIER:
                 ev.append((r.op.date, "Bankdan ödəniş", r.op.doc, 0, 0, -r.op.amount, 0, r.op.teyinat[:90]))
-            elif not sale and r.op.amount > 0:
+            elif not sale and r.category == IN_SUPPLIER:
                 ev.append((r.op.date, "Geri qaytarma (banka)", r.op.doc, 0, 0, -r.op.amount, 0, r.op.teyinat[:90]))
         for o in R.deposit:
             if o.voen != v or not o.executed:

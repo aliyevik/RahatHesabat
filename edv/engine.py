@@ -53,7 +53,7 @@ _SHORT = [
 
 def short_name(s: str) -> str:
     """«Məhdud Məsuliyyətli Cəmiyyəti» → MMC, «Açıq Səhmdar Cəmiyyəti» → ASC, «Qapalı ...» → QSC."""
-    s = (s or "").replace("″", '"')
+    s = re.sub(r'["″“”„«»]+', " ", s or "")       # dırnaq işarələri göstərilmir
     for rx, rep in _SHORT:
         s = rx.sub(rep, s)
     return re.sub(r"\s+", " ", s).strip()
@@ -272,6 +272,8 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
 
     for x in purchases + sales + deposit:
         x.name = short_name(x.name)
+    for o in bank_ops:
+        o.cp_name = short_name(o.cp_name)
     company_name = short_name(company_name)
     issues: list[Issue] = []
     if early:
@@ -295,6 +297,19 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
 
     sup_voens = {i.voen for i in purchases}
     cus_voens = {i.voen for i in sales}
+    real_sup = {i.voen for i in purchases if not i.is_opening}
+    real_cus = {i.voen for i in sales if not i.is_opening}
+    for inv in purchases + sales:
+        if not inv.is_opening:
+            continue
+        if inv.side == "alis" and inv.voen in real_cus and inv.voen not in real_sup:
+            issues.append(Issue("İlkin qalıq: Kreditor / Debitor növünü yoxlayın", inv.date, inv.voen, inv.name,
+                                inv.yekun, "Kreditor kimi yazılıb, amma bu VÖEN yalnız göndərilən qaimələrdə (alıcı) "
+                                "var. Debitor olmalıdırsa — «İlkin qalıqlar»da növünü dəyişin.", inv))
+        if inv.side == "satis" and inv.voen in real_sup and inv.voen not in real_cus:
+            issues.append(Issue("İlkin qalıq: Kreditor / Debitor növünü yoxlayın", inv.date, inv.voen, inv.name,
+                                inv.yekun, "Debitor kimi yazılıb, amma bu VÖEN yalnız gələn qaimələrdə (təchizatçı) "
+                                "var. Kreditor olmalıdırsa — «İlkin qalıqlar»da növünü dəyişin.", inv))
 
     # ---- bank əməliyyatlarının təsnifatı
     bank_rows: list[BankRow] = []

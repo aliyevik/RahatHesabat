@@ -221,10 +221,12 @@ class OpeningDialog(QDialog):
         lay.addWidget(self.table, 1)
 
         self.known = {}
+        self.roles = {}            # VÖEN → {"alis", "satis"} — qaimələrə görə (təchizatçı / alıcı)
         for f in files:
             if f.kind in ("alis", "satis"):
                 for i in f.items:
                     self.known.setdefault(i.voen, i.name)
+                    self.roles.setdefault(i.voen, set()).add(f.kind)
         for r in data.get("rows", []):
             self.known.setdefault(r["voen"], r.get("name", ""))
             self.add_row(r.get("side", "alis"), r["voen"], r.get("name", ""), r.get("date") or "",
@@ -283,6 +285,9 @@ class OpeningDialog(QDialog):
         nm = self.table.item(it.row(), 2)
         if v in self.known and nm is not None and not nm.text().strip():
             nm.setText(self.known[v])
+        roles = self.roles.get(v, set())
+        if len(roles) == 1:              # yalnız alıcıdırsa — Debitor, yalnız təchizatçıdırsa — Kreditor
+            self.table.cellWidget(it.row(), 0).setCurrentIndex(1 if "satis" in roles else 0)
 
     @staticmethod
     def _date(x):
@@ -350,6 +355,17 @@ class OpeningDialog(QDialog):
         out, bad = self.collect()
         if bad:
             QMessageBox.warning(self, "Düzəldin", "\n".join(bad))
+            return
+        odd = []
+        for r in out["rows"]:
+            roles = self.roles.get(r["voen"], set())
+            if roles and r["side"] not in roles:
+                who = "alıcıdır (göndərilən qaimələrdə var)" if "satis" in roles else "təchizatçıdır (gələn qaimələrdə var)"
+                odd.append(f"• {r['name'] or r['voen']} ({r['seria']} {r['nomre']}): "
+                           f"{'Kreditor' if r['side'] == 'alis' else 'Debitor'} seçilib, amma bu VÖEN {who}")
+        if odd and QMessageBox.question(
+                self, "Növü yoxlayın", "Bu sətirlərdə Kreditor / Debitor növü qaimələrə uyğun gəlmir:\n\n" +
+                "\n".join(odd[:20]) + "\n\nYenə də belə yadda saxlansın?") != QMessageBox.Yes:
             return
         self.result_data = out
         self.accept()
