@@ -261,6 +261,11 @@ class OffsetRegister(Offset):
         rv = b[1] - sum(x.amount for x in al if x.kind == "vat")
         months = sorted({mkey(x.date) for x in al_show if x.kind == "vat" and self.a <= x.date <= self.b})
         per = ", ".join(mshort(m) for m in months)
+        if b[1] < 0.005 and pn > 0.004:
+            nm = sorted({mkey(x.date) for x in al_show if x.kind == "net" and self.a <= x.date <= self.b})
+            per = "ƏDV-siz qaimə" + (f" · ödənib {', '.join(mshort(m) for m in nm)}" if nm else "")
+        if any(x.pay.date < self.a or getattr(x.pay, "is_opening", False) for x in al_show):
+            per = (per + " · " if per else "") + "əvvəlki avansdan"
         if i.status_group == "gozleyen":
             per = (per + " · " if per else "") + "⚠ təsdiq gözləyir"
         want = (getattr(self, "filters", None) or {}).get("st")
@@ -324,9 +329,62 @@ class OffsetRegister(Offset):
                        "(əvəzləşmə dövrü — ödənişin ayı)", old, 2, "kreditor borcdan ödəmə")
         tot3 = section("3. Ödənilməyib — kreditor borc kimi qalır (ödəniləndə həmin ayda əvəzləşəcək)", cur_open, 1,
                        "ödənilməmiş qaimələr")
-        if not g.rows:
-            g.rows.append([Cell("Bu dövrdə gələn qaimə və ödəniş yoxdur", RESULT, align="left", colspan=nc)] +
-                          [None] * (nc - 1))
+        # 4. qaiməyə bağlanmayan ödənişlər (avans / artıq ödəniş / qaiməsi olmayan)
+        inp = lambda d: self.a <= d <= self.b
+        lo = sorted([(p_, k_, r_) for p_, k_, r_ in self.R.unalloc_pay
+                     if inp(p_.date) and not getattr(p_, "is_opening", False)], key=lambda x: x[0].date)
+        tot4 = defaultdict(float)
+        if lo:
+            g.rows.append([Cell(None, "note")] + [None] * (nc - 1))
+            g.rows.append([Cell("4. Qaiməyə bağlanmayan ödənişlər — avans / artıq ödəniş (qaimə gələndə FIFO ilə "
+                                "bağlanacaq)", SECTION, align="left", colspan=nc)] + [None] * (nc - 1))
+            for k4, (p_, k_, r_) in enumerate(lo, 1):
+                v_ = getattr(p_, "cp_voen", None) or getattr(p_, "voen", "")
+                nm_ = getattr(p_, "cp_name", None) or getattr(p_, "name", "")
+                if v_ in self.R.parties:
+                    nm_ = self.R.parties[v_].name
+                src = "Bankdan ödəniş" if k_ == "net" else "ƏDV depozitdən ödəniş"
+                tot4["pn" if k_ == "net" else "pv"] += r_
+                g.rows.append([t(str(k4), ITEM, "center"), t(fmt_date(p_.date), ITEM, "center"), t("—", ITEM, "center"),
+                               t(str(getattr(p_, "doc", "") or "")[:24], ITEM, "center"), t(v_, ITEM, "center"),
+                               t(nm_), t(src)] + [Cell(None, ITEM) for _ in range(3)] +
+                              [n(r_ if k_ == "net" else 0), n(r_ if k_ == "vat" else 0),
+                               Cell(None, ITEM), Cell(None, ITEM), t("qaimə yoxdur", RESULT, "center")])
+            g.rows.append(total(f"CƏMİ — qaiməyə bağlanmayan ödənişlər ({len(lo)})", tot4))
+        # bank / depozit ilə tutuşdurma
+        R, a, b = self.R, self.a, self.b
+        w = {k: round(sum(y.amount for y in R.allocs if y.kind == k and y.pay.date < a and inp(y.date)), 2)
+             for k in ("net", "vat")}
+        l_ = {k: round(sum(y.amount for y in R.allocs if y.kind == k and inp(y.pay.date) and y.date > b), 2)
+              for k in ("net", "vat")}
+        tabn, tabv = tot1["pn"] + tot2["pn"], tot1["pv"] + tot2["pv"]
+        g.rows.append([Cell(None, "note")] + [None] * (nc - 1))
+        g.rows.append([Cell("Bank xülasəsi və ƏDV depozit çıxarışı ilə tutuşdurma", SECTION, align="left", colspan=nc)] +
+                      [None] * (nc - 1))
+
+        def recon(label, vn, vv, st=ITEM):
+            g.rows.append([t(label, st, colspan=10)] + [None] * 9 + [n(vn, st), n(vv, st)] +
+                          [Cell(None, st) for _ in range(3)])
+        recon("Cədvəldə ödənilib (1-ci və 2-ci bölmə)", tabn, tabv)
+        if w["net"] or w["vat"]:
+            recon("− o cümlədən əvvəlki dövrlərdə verilmiş avanslardan (ilkin qalıqda mənfi məbləğ də) — bu dövrün ödənişi deyil",
+                  -w["net"], -w["vat"])
+        if tot4:
+            recon("+ qaiməyə bağlanmayan ödənişlər (4-cü bölmə)", tot4["pn"], tot4["pv"])
+        if l_["net"] or l_["vat"]:
+            recon("+ dövrdən sonrakı qaimələrə bağlanan", l_["net"], l_["vat"])
+        rows_b = [r for r in R.bank if inp(r.op.date)]
+        bank_x = round(-sum(r.op.amount for r in rows_b if r.category == OUT_SUPPLIER)
+                       - sum(r.op.amount for r in rows_b if r.category == IN_SUPPLIER), 2)
+        sup = {i.voen for i in R.purchases}
+        dep_x = round(sum(o.mexaric or 0 for o in R.deposit if inp(o.date) and o.executed and not o.is_budget
+                          and o.voen in sup), 2)
+        calc_n = round(tabn - w["net"] + tot4["pn"] + l_["net"], 2)
+        calc_v = round(tabv - w["vat"] + tot4["pv"] + l_["vat"], 2)
+        ok = abs(calc_n - bank_x) < 0.05 and abs(calc_v - dep_x) < 0.05
+        recon("= Bankdan / depozitdən təchizatçılara ödəniş (xülasəyə görə) " + ("✓ uyğundur" if ok else
+              f"⚠ fərq: bank {fmt_money(bank_x - calc_n)}, depozit {fmt_money(dep_x - calc_v)}"),
+              bank_x, dep_x, TOTAL)
         self.offset_vat = tot1["pv"] + tot2["pv"]
         g.top_lines = [("Bu dövrdə əvəzləşən ƏDV:", round(sum(x.amount for x in self.R.allocs if x.kind == "vat"
                                                                 and self.a <= x.date <= self.b), 2)),
