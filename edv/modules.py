@@ -24,6 +24,8 @@ FIELD_NAMES = {"date": "Tarix", "voen": "VÖEN", "name": "Kontragent", "status":
 
 
 def _mark(o) -> str:
+    if getattr(o, "_pre", False):
+        return "⏮ başlanğıcdan əvvəl — hesaba alınmır"
     if getattr(o, "_excluded", False):
         return "⊘ hesaba alınmır"
     if getattr(o, "_edited", False):
@@ -49,6 +51,11 @@ class _Module:
         if not self.store:
             return []
         items = self.store.items(self.kind, with_excluded=True)
+        start = self.store.start
+        for x in items:
+            x._pre = bool(start and x.date < start)
+            if x._pre:
+                x._excluded = True
         if (self.filters or {}).get("scope", "period") == "period":
             items = [x for x in items if self.a <= x.date <= self.b]
         return sorted(items, key=lambda x: (x.date, getattr(x, "nomre", "") or getattr(x, "doc", "")))

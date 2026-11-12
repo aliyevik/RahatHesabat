@@ -1598,6 +1598,19 @@ class BasePage(QWidget):
                             self.store.voen, self.store.name)
         if dlg.exec() == QDialog.Accepted and dlg.result_data is not None:
             od = dt.date.fromisoformat(dlg.result_data["date"])
+            early = [x for k in Store.KINDS for x in self.store.items(k) if x.date <= od]
+            if early:
+                first = min(x.date for x in early)
+                new_od = first - dt.timedelta(days=1)
+                ans = QMessageBox.question(
+                    self, "İlkin qalıq tarixi",
+                    f"Bazada {fmt_date(od)} və ondan əvvəlki tarixli {len(early)} sətir var (qaimə / bank / depozit; "
+                    f"ən erkəni {fmt_date(first)}).\n\nİlkin qalıqlar {fmt_date(od)} gününün SONUNA yazılır, ona görə "
+                    f"bu sətirlər hesablamaya düşməyəcək.\n\nİlkin qalıq tarixi {fmt_date(new_od)} edilsin? "
+                    f"(«Yes» — bu sətirlər hesablanır; «No» — {fmt_date(od)} qalsın, çünki onlar ilkin qalığa daxildir)")
+                if ans == QMessageBox.Yes:
+                    od = new_od
+                    dlg.result_data["date"] = od.isoformat()
             self.store.set_openings(dlg.result_data, od + dt.timedelta(days=1))
             self.refresh()
             self.run()                 # hesabatlar yeni ilkin qalıqlarla dərhal yenilənir
@@ -2575,7 +2588,8 @@ class Main(QMainWindow):
         if not st or not v:
             return
         lst = st.data.setdefault("advance_voens", [])
-        name = self.R.parties[v].name if self.R and v in self.R.parties else v
+        name = self.R.parties[v].name if self.R and v in self.R.parties else next(
+            (r.op.cp_name for r in (self.R.bank if self.R else []) if r.op.cp_voen == v), v)
         if v in lst:
             if QMessageBox.question(self, "Avans qeydi", f"{name} (VÖEN {v}) «avansla ödənilən» siyahısından "
                                     "çıxarılsın? Qaiməsiz ödənişlər yenidən «⚠ yoxlayın» kimi göstəriləcək.") \
