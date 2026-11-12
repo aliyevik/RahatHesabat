@@ -574,12 +574,6 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
             issues.append(Issue(f"{side}: passiv / ləğv edilmiş qaimə", inv.date, inv.voen, inv.name, inv.yekun,
                                 f"{inv.number} · {inv.status} · {inv.novu[:60]} — hesablamaya daxil edilmir.", inv))
 
-    paid_ids = {id(x.invoice) for x in allocs}
-    for inv in active_p:
-        if id(inv) not in paid_ids and inv.status_group == "tesdiq" and not inv.is_opening:
-            issues.append(Issue("Alış: ödənişi tapılmayan qaimə", inv.date, inv.voen, inv.name, inv.yekun,
-                                f"{inv.number} — bu VÖEN-ə bankdan da, depozitdən də ödəniş tapılmadı "
-                                f"(başqa bankdan, kartla və ya nağd ödənilib?). Əvəzləşməyə düşmür.", inv))
     ds = [i.date for i in purchases + sales] + [o.date for o in deposit] + [o.date for o in bank_ops]
     for f in files:
         if f.period:

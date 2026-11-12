@@ -295,38 +295,48 @@ class OffsetRegister(Offset):
             return [t(label, TOTAL, colspan=7)] + [None] * 6 + \
                    [n(tot[k], TOTAL) for k in ("n", "v", "y", "pn", "pv", "rn", "rv")] + [t("", TOTAL)]
 
-        cur = sorted([i for i in self.R.purchases if self.a <= i.date <= self.b and not i.is_opening],
-                     key=lambda i: (i.date, i.nomre))
-        tot1 = defaultdict(float)
-        k = 0
-        for i in cur:
-            row = self._row(k + 1, i, 1, tot1)
-            if row:
-                k += 1
-                g.rows.append(row)
-        g.rows.append(total(f"CƏMİ — cari dövrün qaimələri ({k})", tot1))
-        # əvvəlki dövrlərin (və ilkin qalıq) qaimələrinə bu dövrdə edilən əvəzləşmə
-        old = sorted([i for i in self.R.purchases if (i.date < self.a or i.is_opening) and
-                      any(self.a <= x.date <= self.b for x in self.by[id(i)])], key=lambda i: (i.date, i.nomre))
-        tot2 = defaultdict(float)
-        if old:
-            g.rows.append([Cell(None, "note")] + [None] * (nc - 1))
-            g.rows.append([Cell("Əvvəlki dövrlərin qaimələri üzrə bu dövrdə edilən əvəzləşmə (ödənişin tarixinə görə)",
-                                SECTION, align="left", colspan=nc)] + [None] * (nc - 1))
-            k2 = 0
-            for i in old:
-                row = self._row(k2 + 1, i, 2, tot2)
+        def section(title, invs, sec, label):
+            tot = defaultdict(float)
+            rows, k = [], 0
+            for i in invs:
+                row = self._row(k + 1, i, sec, tot)
                 if row:
-                    k2 += 1
-                    g.rows.append(row)
-            g.rows.append(total(f"CƏMİ — əvvəlki dövrlərin qaimələri ({k2})", tot2))
+                    k += 1
+                    rows.append(row)
+            if not rows:
+                return tot
+            if g.rows:
+                g.rows.append([Cell(None, "note")] + [None] * (nc - 1))
+            g.rows.append([Cell(title, SECTION, align="left", colspan=nc)] + [None] * (nc - 1))
+            g.rows.extend(rows)
+            g.rows.append(total(f"CƏMİ — {label} ({k})", tot))
+            return tot
+
+        key = lambda i: (i.date, i.nomre)
+        paid_by_b = lambda i: any(x.date <= self.b for x in self.by[id(i)])
+        cur = [i for i in self.R.purchases if self.a <= i.date <= self.b and not i.is_opening]
+        cur_paid = sorted([i for i in cur if self.R.base.get(id(i)) is None or paid_by_b(i)], key=key)
+        cur_open = sorted([i for i in cur if self.R.base.get(id(i)) is not None and not paid_by_b(i)], key=key)
+        old = sorted([i for i in self.R.purchases if (i.date < self.a or i.is_opening) and
+                      any(self.a <= x.date <= self.b for x in self.by[id(i)])], key=key)
+        tot1 = section("1. Cari dövrün qaimələri — ödənilib / əvəzləşib", cur_paid, 1, "cari dövrün ödənilmiş qaimələri")
+        tot2 = section("2. Kreditor borcdan ödəmə — əvvəlki dövrlərin (ilkin qalıq) qaimələrinə bu dövrdə ödəniş "
+                       "(əvəzləşmə dövrü — ödənişin ayı)", old, 2, "kreditor borcdan ödəmə")
+        tot3 = section("3. Ödənilməyib — kreditor borc kimi qalır (ödəniləndə həmin ayda əvəzləşəcək)", cur_open, 1,
+                       "ödənilməmiş qaimələr")
+        if not g.rows:
+            g.rows.append([Cell("Bu dövrdə gələn qaimə və ödəniş yoxdur", RESULT, align="left", colspan=nc)] +
+                          [None] * (nc - 1))
         self.offset_vat = tot1["pv"] + tot2["pv"]
         g.top_lines = [("Bu dövrdə əvəzləşən ƏDV:", round(sum(x.amount for x in self.R.allocs if x.kind == "vat"
                                                                 and self.a <= x.date <= self.b), 2)),
-                       ("Açıq qalıq — əsas:", round(tot1["rn"], 2)), ("Açıq qalıq — ƏDV:", round(tot1["rv"], 2))]
-        g.footnote = ("Ödənişlər VÖEN üzrə FIFO ilə bağlanır: əvvəl ilkin qalıq qaimələri, sonra köhnədən yeniyə. "
-                      "Bank ödənişi əsas məbləği, ƏDV depozit ödənişi ƏDV-ni bağlayır. Əvəzləşmə dövrü — ƏDV-nin "
-                      "ödənildiyi ay. Əvvəlki dövrlərin qaimələri aşağıda ayrıca bölmədədir.")
+                       ("o cümlədən kreditor borcdan:", round(tot2["pv"], 2)),
+                       ("Kreditor borc (açıq qalıq) — əsas:", round(tot1["rn"] + tot2["rn"] + tot3["rn"], 2)),
+                       ("ƏDV:", round(tot1["rv"] + tot2["rv"] + tot3["rv"], 2))]
+        g.footnote = ("Ödənişlər VÖEN üzrə FIFO ilə bağlanır: əvvəl ilkin qalıq (köhnə kreditor borc) qaimələri, sonra "
+                      "köhnədən yeniyə. Bank ödənişi əsas məbləği, ƏDV depozit ödənişi ƏDV-ni bağlayır. Əvəzləşmə "
+                      "dövrü — ƏDV-nin ödənildiyi ay. Ödənilməmiş qaimələr 3-cü bölmədədir: ödəniş gələndə həmin ayın "
+                      "əvəzləşməsinə düşəcək.")
         self._by_id = {id(i): i for i in self.R.purchases}
         return g
 

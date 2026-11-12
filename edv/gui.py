@@ -2303,7 +2303,7 @@ class Main(QMainWindow):
         ("🧾   ƏDV hesabatı", "tabs"),
         "BORCLAR",
         ("📗   Debitor borclar (alıcılar)", (SalesReport, "Debitor borclar (alıcılar)", "Debitor", None)),
-        ("📕   Kreditor borclar (təchizatçılar)", (Creditors, "Kreditor borclar (təchizatçılar)", "Kreditor", None)),
+        ("📕   Gələn qaimələr üzrə əvəzləşmə", (OffsetRegister, "Gələn qaimələr üzrə əvəzləşmə", "Əvəzləşmə", None)),
         ("🅰   Avans qaimələri", (Advances, "Avans qaimələri", "Avanslar", None)),
         "NƏZARƏT",
         ("⚠   Yoxlanılmalı", (IssuesReport, "Yoxlanılmalı məqamlar", "Yoxlanılmalı", None)),
