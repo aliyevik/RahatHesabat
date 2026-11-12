@@ -9,7 +9,7 @@ from rahat.layout import CASH, HEAD, ITEM, RESULT, SECTION, SUB, TOTAL, Cell, Gr
 from rahat.model import AY_ADLARI, fmt_date, fmt_money
 
 from . import VAT_RATE
-from .engine import BANK_IN_ORDER, BANK_OUT_ORDER, IN_SALES, Result
+from .engine import BANK_IN_ORDER, BANK_OUT_ORDER, IN_SALES, IN_SUPPLIER, OUT_SUPPLIER, Result
 from .reports import (ALLOC_HEAD, Debts, Detail, Offset, _alloc_row, mkey, mlabel, months_between, n, t)
 
 
@@ -333,12 +333,43 @@ class OffsetRegister(Offset):
                        ("o cümlədən kreditor borcdan:", round(tot2["pv"], 2)),
                        ("Kreditor borc (açıq qalıq) — əsas:", round(tot1["rn"] + tot2["rn"] + tot3["rn"], 2)),
                        ("ƏDV:", round(tot1["rv"] + tot2["rv"] + tot3["rv"], 2))]
+        g.top_lines += self.reconcile(tot1["pn"] + tot2["pn"], tot1["pv"] + tot2["pv"])
         g.footnote = ("Ödənişlər VÖEN üzrə FIFO ilə bağlanır: əvvəl ilkin qalıq (köhnə kreditor borc) qaimələri, sonra "
                       "köhnədən yeniyə. Bank ödənişi əsas məbləği, ƏDV depozit ödənişi ƏDV-ni bağlayır. Əvəzləşmə "
                       "dövrü — ƏDV-nin ödənildiyi ay. Ödənilməmiş qaimələr 3-cü bölmədədir: ödəniş gələndə həmin ayın "
                       "əvəzləşməsinə düşəcək.")
         self._by_id = {id(i): i for i in self.R.purchases}
         return g
+
+    def reconcile(self, tab_net, tab_vat):
+        """Bank / depozit ödənişləri ilə cədvəlin tutuşdurulması."""
+        R, a, b = self.R, self.a, self.b
+        inp = lambda d: a <= d <= b
+        out = []
+        rows = [r for r in R.bank if inp(r.op.date)]
+        bank_x = round(-sum(r.op.amount for r in rows if r.category == OUT_SUPPLIER)
+                       - sum(r.op.amount for r in rows if r.category == IN_SUPPLIER), 2)
+        sup = {i.voen for i in R.purchases}
+        dep_x = round(sum(o.mexaric or 0 for o in R.deposit if inp(o.date) and o.executed and not o.is_budget
+                          and o.voen in sup), 2)
+        for kind, x, tab, src in (("net", bank_x, tab_net, "Bankdan təchizatçılara"),
+                                  ("vat", dep_x, tab_vat, "Depozitdən təchizatçılara (ƏDV)")):
+            al = [y for y in R.allocs if y.kind == kind]
+            y_ = round(sum(y.amount for y in al if inp(y.pay.date) and y.date <= b), 2)
+            l_ = round(sum(y.amount for y in al if inp(y.pay.date) and y.date > b), 2)
+            w_ = round(sum(y.amount for y in al if y.pay.date < a and inp(y.date)), 2)
+            z_ = round(sum(rest for p, k, rest in R.unalloc_pay if k == kind and inp(p.date)), 2)
+            ok = abs(x - (y_ + l_ + z_)) < 0.05 and abs(tab - (y_ + w_)) < 0.05
+            txt = f"{fmt_money(x)} = qaimələrə bağlanıb {fmt_money(y_)}"
+            if z_:
+                txt += f" + qaimə tapılmayıb (avans / artıq ödəniş) {fmt_money(z_)}"
+            if l_:
+                txt += f" + dövrdən sonrakı qaimələrə {fmt_money(l_)}"
+            if w_:
+                txt += f"; cədvəldə əvvəlki avanslardan da {fmt_money(w_)}"
+            txt += " ✓" if ok else f" ⚠ fərq var (cədvəldə {fmt_money(tab)})"
+            out.append((src + ":", txt))
+        return out
 
     def detail(self, ref):
         i = self._by_id.get(ref[1])
