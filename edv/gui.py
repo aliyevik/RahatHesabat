@@ -163,14 +163,15 @@ class OpeningDialog(QDialog):
         head = QLabel(f"<b>{comp_name}</b> · VÖEN {comp_voen}")
         lay.addWidget(head)
         dl = QHBoxLayout()
-        dl.addWidget(QLabel("İlkin qalıqların tarixi:"))
+        dl.addWidget(QLabel("<b>Başlanğıc tarixi</b> (qalıqlar bu günün əvvəlinə):"))
         self.od_edit = QDateEdit()
         self.od_edit.setCalendarPopup(True)
         self.od_edit.setDisplayFormat("dd.MM.yyyy")
         self.od_edit.setDate(qdate(od))
         dl.addWidget(self.od_edit)
-        dnote = QLabel("— qalıqlar bu günün sonuna yazılır; baza növbəti gündən başlayır. "
-                       "Yadda saxlandıqdan sonra tarix və məbləğlər kilidlənir, dəyişmək üçün kod tələb olunur.")
+        dnote = QLabel("— məs. 01.10.2026: qalıqlar 1 oktyabrın əvvəlinə (çıxarışdakı «İlkin qalıq» kimi), baza 1 "
+                       "oktyabrdan başlayır və o günün əməliyyatları da hesablanır. Yadda saxlandıqdan sonra tarix və "
+                       "məbləğlər kilidlənir, dəyişmək üçün kod tələb olunur.")
         dnote.setObjectName("muted")
         dnote.setWordWrap(True)
         dl.addWidget(dnote, 1)
@@ -328,8 +329,9 @@ class OpeningDialog(QDialog):
             if d is None:
                 bad.append(f"Sətir {r + 1}: qaimənin tarixi yazılmayıb (gg.aa.iiii)")
                 continue
-            if d > od:
-                bad.append(f"Sətir {r + 1}: qaimənin tarixi ilkin qalıq tarixindən ({fmt_date(od)}) sonra ola bilməz")
+            if d >= od:
+                bad.append(f"Sətir {r + 1}: ilkin qalıq qaiməsinin tarixi başlanğıc tarixindən ({fmt_date(od)}) "
+                           f"əvvəl olmalıdır")
                 continue
             if not txt(5):
                 bad.append(f"Sətir {r + 1}: qaimənin nömrəsi yazılmayıb")
@@ -1280,6 +1282,50 @@ class BasePage(QWidget):
         self.refresh(set_period=True)
         if getattr(self.main, "ready", False):
             self.run()
+        QTimer.singleShot(400, self.check_start)
+
+    def _code_ok(self) -> bool:
+        if not self.store.locked:
+            return True
+        code, ok = QInputDialog.getText(self, "Təsdiq kodu", "İlkin qalıqlar kilidlidir.\n"
+                                        "Dəyişmək üçün kodunuzu (admin) və ya təsdiq kodunu daxil edin:",
+                                        QLineEdit.Password)
+        if not ok:
+            return False
+        m = self.main
+        if not (check_code(code) or (m.users.is_admin(m.user) and m.users.check(m.user, code))):
+            self.store.log("Uğursuz cəhd", "yanlış təsdiq kodu")
+            self.store.save()
+            QMessageBox.warning(self, "Kod yanlışdır", "Təsdiq kodu yanlışdır. Dəyişiklik edilmədi.")
+            return False
+        return True
+
+    def check_start(self):
+        """Başlanğıc tarixindən əvvəl sətir varsa (məs. 01.10 qaiməsi, başlanğıc 02.10) — düzəltməyi təklif et."""
+        st = self.store
+        if not st or not st.start or st.data.get("start_prompt_declined") == st.start.isoformat():
+            return
+        early = [x for k in Store.KINDS for x in st.items(k) if x.date < st.start]
+        if not early:
+            return
+        first = min(x.date for x in early)
+        ans = QMessageBox.question(
+            self, "Başlanğıc tarixi",
+            f"Bazanın başlanğıc tarixi {fmt_date(st.start)}-dir, amma bazada ondan əvvəlki {len(early)} sətir var "
+            f"(ən erkəni {fmt_date(first)}). Bu sətirlər hesablamaya düşmür — məs. həmin günün qaimələri və bank "
+            f"ödənişləri bir-birini tapmır.\n\nBaşlanğıc tarixi {fmt_date(first)} edilsin? İlkin qalıqlar bu günün "
+            f"əvvəlinə aid olacaq (çıxarışdakı «İlkin qalıq» kimi).")
+        if ans != QMessageBox.Yes:
+            st.data["start_prompt_declined"] = st.start.isoformat()
+            st.save()
+            return
+        if not self._code_ok():
+            return
+        o = dict(st.data.get("openings") or {})
+        o["date"] = (first - dt.timedelta(days=1)).isoformat()
+        st.set_openings(o, first)
+        self.refresh()
+        self.run()
 
     def new_company(self):
         r = new_company_dialog(self)
@@ -1564,8 +1610,8 @@ class BasePage(QWidget):
         rows = o.get("rows", [])
         kr = [r for r in rows if r["side"] == "alis"]
         db = [r for r in rows if r["side"] == "satis"]
-        od = (st.start or dt.date.today()) - dt.timedelta(days=1)
-        parts = [f"Qalıqlar <b>{fmt_date(od)}</b> tarixinə",
+        od = st.start or dt.date.today()
+        parts = [f"Qalıqlar <b>{fmt_date(od)}</b> tarixinin əvvəlinə",
                  f"kreditor: {len(kr)} kontragent, {fmt_money(sum(r['net'] + r['vat'] for r in kr))}",
                  f"debitor: {len(db)} kontragent, {fmt_money(sum(r['net'] + r['vat'] for r in db))}"]
         if o.get("deposit") is not None:
@@ -1593,25 +1639,24 @@ class BasePage(QWidget):
                 self.store.save()
                 QMessageBox.warning(self, "Kod yanlışdır", "Təsdiq kodu yanlışdır. İlkin qalıqlar dəyişdirilmədi.")
                 return
-        od = (self.store.start or dt.date(dt.date.today().year, 1, 1)) - dt.timedelta(days=1)
+        od = self.store.start or dt.date(dt.date.today().year, 1, 1)      # başlanğıc tarixi
         dlg = OpeningDialog(self, self.store.source_files(), self.store.data.get("openings") or {}, od,
                             self.store.voen, self.store.name)
         if dlg.exec() == QDialog.Accepted and dlg.result_data is not None:
-            od = dt.date.fromisoformat(dlg.result_data["date"])
-            early = [x for k in Store.KINDS for x in self.store.items(k) if x.date <= od]
+            start = dt.date.fromisoformat(dlg.result_data["date"])
+            early = [x for k in Store.KINDS for x in self.store.items(k) if x.date < start]
             if early:
                 first = min(x.date for x in early)
-                new_od = first - dt.timedelta(days=1)
                 ans = QMessageBox.question(
-                    self, "İlkin qalıq tarixi",
-                    f"Bazada {fmt_date(od)} və ondan əvvəlki tarixli {len(early)} sətir var (qaimə / bank / depozit; "
-                    f"ən erkəni {fmt_date(first)}).\n\nİlkin qalıqlar {fmt_date(od)} gününün SONUNA yazılır, ona görə "
-                    f"bu sətirlər hesablamaya düşməyəcək.\n\nİlkin qalıq tarixi {fmt_date(new_od)} edilsin? "
-                    f"(«Yes» — bu sətirlər hesablanır; «No» — {fmt_date(od)} qalsın, çünki onlar ilkin qalığa daxildir)")
+                    self, "Başlanğıc tarixi",
+                    f"Bazada {fmt_date(start)} tarixindən əvvəlki {len(early)} sətir var (qaimə / bank / depozit; "
+                    f"ən erkəni {fmt_date(first)}). Onlar hesablamaya düşməyəcək.\n\nBaşlanğıc tarixi "
+                    f"{fmt_date(first)} edilsin? («Yes» — bu sətirlər də hesablanır; «No» — {fmt_date(start)} qalsın, "
+                    f"çünki onlar ilkin qalıqlara daxildir)")
                 if ans == QMessageBox.Yes:
-                    od = new_od
-                    dlg.result_data["date"] = od.isoformat()
-            self.store.set_openings(dlg.result_data, od + dt.timedelta(days=1))
+                    start = first
+            dlg.result_data["date"] = (start - dt.timedelta(days=1)).isoformat()
+            self.store.set_openings(dlg.result_data, start)
             self.refresh()
             self.run()                 # hesabatlar yeni ilkin qalıqlarla dərhal yenilənir
 

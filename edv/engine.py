@@ -349,6 +349,16 @@ def compute(files: list[SourceFile], openings: dict | None = None) -> Result:
                 o.resolved_by = how
                 o.cp_voen = rv
                 o.cp_name = known[rv].name
+        # 2-ci mərhələ: VÖEN qaimələrdə yoxdursa — ada görə (bankda VÖEN səhv / fərqli ola bilər)
+        if (o.cp_voen not in known and o.cp_voen not in BUDGET_VOENS and o.cp_voen not in BANK_SELF_VOENS
+                and o.cp_voen != company_voen and o.cp_name and not o.category):
+            cands = [pv for pv, pp in known.items() if names_match(o.cp_name, pp.name)
+                     or any(names_match(o.cp_name, nm) for nm in pp.names_seen)]
+            if len(cands) == 1:
+                o.orig_cp = f"{o.cp_name} / {o.cp_voen or '—'}"
+                o.resolved_by = "ada görə (bankdakı VÖEN qaimələrdə yoxdur)"
+                o.cp_voen = cands[0]
+                o.cp_name = known[cands[0]].name
         t = o.teyinat.lower()
         v = o.cp_voen
         official = parties[v].name if v in parties else ""
