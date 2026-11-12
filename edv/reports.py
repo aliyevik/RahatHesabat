@@ -779,16 +779,26 @@ class Debts:
     def detail(self, ref):
         v = ref[1]
         p = self.R.parties.get(v)
-        rows, bn, bv = [], 0.0, 0.0
-        for e in self._events(v):
-            if e[0] > self.b:
+        rows = []
+        ev = [e for e in self._events(v) if e[0] <= self.b]
+        pre = [e for e in ev if e[0] < self.a]
+        bn = sum(e[3] - e[5] for e in pre)
+        bv = sum(e[4] - e[6] for e in pre)
+        opn = [e[2] for e in pre if e[1] == "İlkin qalıq"]
+        note = ("ilkin qalıq qaimələri: " + ", ".join(opn[:8]) + (" …" if len(opn) > 8 else "")) if opn else \
+               ("əvvəlki dövrlərin hərəkəti üzrə" if pre else "əvvəlki qalıq yoxdur")
+        rows.append([fmt_date(self.a - dt.timedelta(days=1)), "İlkin qalıq (dövrün əvvəlinə)", "", None, None,
+                     None, None, bn, bv, note])
+        for e in ev:
+            if e[0] < self.a:
                 continue
             bn += e[3] - e[5]
             bv += e[4] - e[6]
             rows.append([fmt_date(e[0]), e[1], e[2], e[3], e[4], e[5], e[6], bn, bv, e[7]])
         paid = "Daxil olub" if self.side == "satis" else "Ödənilib"
         return Detail(f"{p.name if p else v} · VÖEN {v}",
-                      "Üzləşmə aktı — əsas məbləğ (ƏDV-siz) və ƏDV ayrıca; passiv qaimələr qeyd ilə göstərilir",
+                      f"Üzləşmə aktı {fmt_date(self.a)} – {fmt_date(self.b)} — əsas məbləğ (ƏDV-siz) və ƏDV ayrıca; "
+                      "ilk sətir — dövrün əvvəlinə qalıq; passiv qaimələr qeyd ilə göstərilir",
                       ["Tarix", "Növ", "Sənəd", "Qaimə ƏDV-siz", "Qaimə ƏDV", f"{paid} ƏDV-siz", f"{paid} ƏDV",
                        "Qalıq ƏDV-siz", "Qalıq ƏDV", "Qeyd / təyinat"], rows, {3, 4, 5, 6, 7, 8},
                       [("Qalıq — əsas məbləğ", bn), ("Qalıq — ƏDV", bv), ("Cəmi qalıq", bn + bv)])
@@ -913,10 +923,32 @@ class IssuesReport:
         if not lst_all:
             g.rows.append([Cell("Yoxlanılmalı məqam yoxdur ✓", RESULT, align="left", colspan=6)] + [None] * 5)
         g.top_lines = [("Açıq məqam:", str(len(self.items))), ("OK edilən:", str(len(self.all) - len(self.items)))]
-        g.footnote = ("Sətrə iki dəfə basın — məqamı «OK» (yoxlanılıb, düzdür) kimi qeyd edin; istifadəçi kodu tələb "
-                      "olunur. OK edilənlər «Göstər: OK edilənlər»də qalır və geri açıla bilər.")
+        g.footnote = ("Sətrə iki dəfə basın — kartoçka açılır (izah və kontragentin üzləşmə aktı); orada «✓ OK qeyd et» "
+                      "ilə məqamı yoxlanılmış kimi qeyd edin (istifadəçi kodu tələb olunur). OK edilənlər «Göstər: OK "
+                      "edilənlər»də qalır və geri açıla bilər.")
         self._by_key = {issue_key(i): i for i in self.all}
         return g
 
     def detail(self, ref):
-        return None
+        i = getattr(self, "_by_key", {}).get(ref[1])
+        if i is None:
+            return None
+        ack = self.acks.get(ref[1])
+        info = (f"{fmt_date(i.date) if i.date else ''} · məbləğ {fmt_money(i.amount or 0)} AZN · {i.text}"
+                + (f"  ✓ OK: {ack['user']} · {ack['at']} · {ack.get('note', '')}" if ack else ""))
+        d = None
+        v = i.voen
+        if v and v in self.R.parties:
+            sup = any(x.voen == v for x in self.R.purchases)
+            cus = any(x.voen == v for x in self.R.sales)
+            side = "satis" if ("Satış" in i.group or "satış" in i.group or (cus and not sup)) else "alis"
+            rep = (Debtors if side == "satis" else Creditors)(self.R, self.a, self.b)
+            d = rep.detail(("party", v))
+        if d is None:
+            d = Detail(i.name or i.group, "", ["Tarix", "VÖEN", "Kontragent", "Məbləğ", "İzah"],
+                       [[fmt_date(i.date) if i.date else "", v, i.name, i.amount, i.text]], {3}, [])
+        d.title = f"⚠ {i.group}" + (f" · {i.name}" if i.name else "")
+        d.sub = info + ("\n" + d.sub if d.sub else "")
+        d.ack_key = ref[1]
+        d.acked = bool(ack)
+        return d

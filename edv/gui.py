@@ -1765,6 +1765,11 @@ class GridPage(QWidget):
         db.clicked.connect(lambda: self.views.setCurrentIndex(0))
         dbar.addWidget(db)
         dbar.addStretch(1)
+        self.d_ok = QPushButton("✓ OK qeyd et")
+        self.d_ok.setObjectName("primary")
+        self.d_ok.clicked.connect(self._ack_from_card)
+        self.d_ok.hide()
+        dbar.addWidget(self.d_ok)
         dx = QPushButton("Kartoçkanı Excel-ə çıxar")
         dx.clicked.connect(self.export_detail)
         dbar.addWidget(dx)
@@ -2095,13 +2100,16 @@ class GridPage(QWidget):
         if isinstance(ref, tuple) and ref[:1] == ("edit",):
             self.main.open_edit(ref[1], ref[2])
             return
-        if isinstance(ref, tuple) and ref[:1] == ("issue",):
-            self.main.ack_issue(ref[1])
-            return
         d = self.rep.detail(ref) if self.rep else None
         if not d:
+            if isinstance(ref, tuple) and ref[:1] == ("issue",):
+                self.main.ack_issue(ref[1])
             return
         self._detail = d
+        key = getattr(d, "ack_key", None)
+        self.d_ok.setVisible(bool(key))
+        if key:
+            self.d_ok.setText("↺ OK-ni geri al" if getattr(d, "acked", False) else "✓ OK qeyd et")
         self.d_title.setText(d.title)
         self.d_sub.setText(d.sub)
         while self.d_totals.count():
@@ -2144,6 +2152,12 @@ class GridPage(QWidget):
         for ci, h in enumerate(d.headers):
             t.setColumnWidth(ci, min(t.columnWidth(ci) + 14, 380 if h in ("Təyinat", "Sənəd / təyinat") else 280))
         self.views.setCurrentIndex(1)
+
+    def _ack_from_card(self):
+        key = getattr(getattr(self, "_detail", None), "ack_key", None)
+        if key:
+            self.views.setCurrentIndex(0)
+            self.main.ack_issue(key)
 
     def _save_path(self, name, ext):
         st = self.main.settings
@@ -2189,7 +2203,7 @@ class GridPage(QWidget):
         d = getattr(self, "_detail", None)
         if not d:
             return
-        p = self._save_path(d.title.replace("/", "-")[:60], "xlsx")
+        p = self._save_path(re.sub(r'[\\/:*?"<>|⚠]+', " ", d.title).strip()[:60], "xlsx")
         if not p:
             return
         wb = Workbook()
