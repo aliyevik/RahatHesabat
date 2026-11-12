@@ -7,8 +7,8 @@ import os
 import sys
 import traceback
 
-from PySide6.QtCore import QDate, Qt, QTimer, QUrl
-from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QFontMetrics, QIcon, QKeySequence, QPalette,
+from PySide6.QtCore import QDate, QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QFontMetrics, QIcon, QKeySequence, QPalette,
                            QShortcut)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QDialog,
                                QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
@@ -2396,23 +2396,48 @@ class Main(QMainWindow):
         v.addLayout(h, 1)
         self.nav = QListWidget()
         self.nav.setObjectName("sidebar")
-        self.nav.setFixedWidth(270)
+        self.nav.setFixedWidth(290)
+        self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.nav.setTextElideMode(Qt.ElideRight)
+        self.nav.setStyleSheet(
+            f"#sidebar{{background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 {theme.NAVY}, stop:0.55 #134A8E, "
+            f"stop:1 {theme.BLUE_MID}); border:none; outline:0; color:white;}}"
+            "#sidebar::item{color:white; padding:9px 12px; border:none; border-left:4px solid transparent;}"
+            "#sidebar::item:selected{background:white; color:" + theme.NAVY + "; border-left:4px solid #64B5F6;"
+            " border-radius:6px; font-weight:600;}"
+            "#sidebar::item:hover:!selected{background:rgba(255,255,255,40); border-radius:6px;}")
+        self.nav.setSpacing(0)
         self.stack = QStackedWidget()
         self.pages = []
         self.row_to_stack = {}
+        in_group = False
         for entry in self.NAV:
             if isinstance(entry, str):
-                it = QListWidgetItem(entry)
+                gap = QListWidgetItem("")
+                gap.setFlags(Qt.NoItemFlags)
+                gap.setSizeHint(QSize(10, 12))
+                self.nav.addItem(gap)
+                it = QListWidgetItem("▾  " + entry)
                 it.setFlags(Qt.NoItemFlags)
                 f = it.font()
                 f.setBold(True)
                 f.setPointSizeF(8.5)
+                f.setLetterSpacing(QFont.AbsoluteSpacing, 1.2)
                 it.setFont(f)
-                it.setForeground(QBrush(QColor(theme.BLUE)))
+                it.setForeground(QBrush(QColor("#BBDEFB")))
+                it.setBackground(QBrush(QColor(255, 255, 255, 45)))
                 self.nav.addItem(it)
+                in_group = True
                 continue
             label, spec = entry
-            self.nav.addItem(QListWidgetItem(label))
+            it = QListWidgetItem(("   " if in_group else "") + label)
+            if in_group:
+                it.setBackground(QBrush(QColor(255, 255, 255, 22)))
+            else:
+                f = it.font()
+                f.setBold(True)
+                it.setFont(f)
+            self.nav.addItem(it)
             row = self.nav.count() - 1
             if spec is None:
                 w = bp
@@ -2480,10 +2505,10 @@ class Main(QMainWindow):
         for p in self.pages:
             p.load(R, a, b)
         for i in range(self.nav.count()):
-            if self.nav.item(i).text().startswith("⚠"):
+            if self.nav.item(i).text().strip().startswith("⚠"):
                 acks = R.store.data.get("ok_issues", {}) if getattr(R, "store", None) else {}
                 n_iss = len([x for x in R.issues if (x.date is None or a <= x.date <= b) and issue_key(x) not in acks])
-                self.nav.item(i).setText(f"⚠   Yoxlanılmalı ({n_iss})")
+                self.nav.item(i).setText(f"   ⚠   Yoxlanılmalı ({n_iss})")
 
     # --- redaktə / əl ilə əlavə
     def open_edit(self, kind, key):
